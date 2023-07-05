@@ -84,7 +84,8 @@ fn process_movement(tokens: &Vec<String>) -> Option<Command> {
 }
 
 pub fn process_command(input: &str) -> Option<Command> {
-    let tokens: Vec<String> = input.split_whitespace().map(|t| t.to_lowercase()).collect();
+    let mut tokens: Vec<String> = input.split_whitespace().map(|t| t.to_lowercase()).collect();
+    tokens.retain(|token| token != "\u{e0000}");
     if tokens.is_empty() {
         return None;
     }
