@@ -44,9 +44,10 @@ pub fn is_operator(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
     conn.query_row(
         "select id from operators where twitch_id=?1",
         params![id],
-        |row| row.get(0).optional(),
+        |row| row.get(0),
     )
-    .map(|opt: Option<u64>| opt.is_some())
+    .optional()
+    .map(|opt: Option<Option<u64>>| opt.flatten().is_some())
 }
 
 pub fn is_blocked(conn: &mut Connection, id: &str) -> rusqlite::Result<bool> {
@@ -82,8 +83,9 @@ fn get_user_id_from_name(tx: &mut Transaction, name: &str) -> rusqlite::Result<O
     tx.query_row(
         "select twitch_id from users where name=?1",
         params![name],
-        |row| row.get(0).optional(),
+        |row| row.get(0),
     )
+    .optional()
 }
 
 pub fn block_user(
