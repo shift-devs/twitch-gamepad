@@ -1,4 +1,5 @@
 use crate::{database, gamepad::Gamepad};
+use anyhow::Context;
 use core::time::Duration;
 use rusqlite::Connection;
 use tokio::sync::mpsc::Receiver;
@@ -128,10 +129,12 @@ pub async fn run_commands<G: Gamepad + Sized>(
     while let Some(msg) = rx.recv().await {
         use Command::*;
 
-        database::update_user(db_conn, &msg.sender_id, &msg.sender_name)?;
+        database::update_user(db_conn, &msg.sender_id, &msg.sender_name)
+            .context("Failed to update user")?;
 
         let msg = if msg.privilege < Privilege::Operator
-            && database::is_operator(db_conn, &msg.sender_id)?
+            && database::is_operator(db_conn, &msg.sender_id)
+                .context("Failed to check for operator")?
         {
             Message {
                 sender_name: msg.sender_name,
@@ -145,7 +148,9 @@ pub async fn run_commands<G: Gamepad + Sized>(
 
         match msg.command {
             Movement(movement, duration) => {
-                if !database::is_blocked(db_conn, &msg.sender_id)? {
+                if !database::is_blocked(db_conn, &msg.sender_id)
+                    .context("Failed to check for blocked user")?
+                {
                     info!("Sending movement {:?}", msg.command);
                     gamepad.press(&movement)?;
                     tokio::time::sleep(Duration::from_millis(duration as u64)).await;
@@ -157,7 +162,7 @@ pub async fn run_commands<G: Gamepad + Sized>(
             }
             AddOperator(user) => {
                 if msg.privilege >= Privilege::Moderator {
-                    database::op_user(db_conn, &user)?;
+                    database::op_user(db_conn, &user).context("Failed to op user")?;
                     info!("Added {} as operator", user);
                 } else {
                     info!(
@@ -168,7 +173,7 @@ pub async fn run_commands<G: Gamepad + Sized>(
             }
             RemoveOperator(user) => {
                 if msg.privilege >= Privilege::Moderator {
-                    database::deop_user(db_conn, &user)?;
+                    database::deop_user(db_conn, &user).context("Failed to deop user")?;
                     info!("Removed {} as operator", user);
                 } else {
                     info!(
@@ -179,7 +184,8 @@ pub async fn run_commands<G: Gamepad + Sized>(
             }
             Block(user, duration) => {
                 if msg.privilege >= Privilege::Moderator {
-                    database::block_user(db_conn, &user, duration)?;
+                    database::block_user(db_conn, &user, duration)
+                        .context("Failed to block user")?;
                     info!("Blocked user {} until time {:?}", user, duration);
                 } else {
                     info!(
@@ -190,7 +196,7 @@ pub async fn run_commands<G: Gamepad + Sized>(
             }
             Unblock(user) => {
                 if msg.privilege >= Privilege::Moderator {
-                    database::unblock_user(db_conn, &user)?;
+                    database::unblock_user(db_conn, &user).context("Failed to unblock user")?;
                     info!("Unblocked user {}", user);
                 } else {
                     info!(
