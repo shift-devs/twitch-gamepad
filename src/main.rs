@@ -1,3 +1,4 @@
+use command::Message;
 use tokio::{self, io::AsyncBufReadExt};
 
 mod command;
@@ -6,19 +7,11 @@ mod database;
 mod gamepad;
 mod twitch;
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
-    tracing_subscriber::fmt::init();
-    let (config, cfg_path) = config::read_config().await.unwrap();
-    let channel = config.twitch.channel_name;
+#[cfg(test)]
+mod test;
 
-    let db_path = cfg_path.parent().unwrap().join("twitch_gamepad.db");
-    let mut db_conn = database::connect(&db_path).unwrap();
-
-    let (tx, rx) = tokio::sync::mpsc::channel(100);
-    let (msg_join_handle, client) = twitch::run_twitch_irc(channel.clone(), tx.clone());
-
-    let jh = tokio::task::spawn(async move {
+fn stdin_input(tx: tokio::sync::mpsc::Sender<Message>) -> tokio::task::JoinHandle<()> {
+    tokio::task::spawn(async move {
         let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
         let mut line = String::new();
 
@@ -27,7 +20,7 @@ async fn main() {
                 break;
             }
 
-            if let Some(cmd) = command::process_command(&line) {
+            if let Some(cmd) = command::parse_command(&line) {
                 let msg = command::Message {
                     command: cmd,
                     sender_name: "stdin".to_owned(),
@@ -41,15 +34,30 @@ async fn main() {
 
             line.clear();
         }
-    });
+    })
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    tracing_subscriber::fmt::init();
+    let (config, cfg_path) = config::read_config().await.unwrap();
+    let channel = config.twitch.channel_name;
+
+    let db_path = cfg_path.parent().unwrap().join("twitch_gamepad.db");
+    let mut db_conn = database::connect(&db_path).unwrap();
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+    let (msg_join_handle, client) = twitch::run_twitch_irc(channel.clone(), tx.clone());
+
+    let stdin_join_handle = stdin_input(tx.clone());
 
     let mut gamepad = gamepad::UinputGamepad::new().unwrap();
     client.join(channel).unwrap();
 
-    command::run_commands(rx, &mut gamepad, &mut db_conn)
+    command::run_commands(&mut rx, &mut gamepad, &mut db_conn)
         .await
         .unwrap();
 
     msg_join_handle.await.unwrap();
-    jh.await.unwrap();
+    stdin_join_handle.await.unwrap();
 }

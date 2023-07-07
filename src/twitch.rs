@@ -49,7 +49,7 @@ pub fn run_twitch_irc(
                     info!("Received: {:?}", msg);
                     let privilege = user_privilege(&msg, &channel);
 
-                    if let Some(command) = command::process_command(&msg.message_text) {
+                    if let Some(command) = command::parse_command(&msg.message_text) {
                         let msg = Message {
                             command,
                             sender_name: msg.sender.login,

@@ -21,7 +21,7 @@ pub struct Message {
     pub privilege: Privilege,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum Movement {
     A,
@@ -40,7 +40,7 @@ pub enum Movement {
     Select,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Command {
     Movement(Movement, u32),
@@ -50,12 +50,12 @@ pub enum Command {
     Unblock(String),
 }
 
-fn process_movement(tokens: &Vec<String>) -> Option<Command> {
-    if tokens.len() > 2 {
+fn parse_movement(tokens: &Vec<&str>) -> Option<Command> {
+    if tokens.is_empty() || tokens.len() > 2 {
         return None;
     }
 
-    let movement = match tokens[0].as_str() {
+    let movement = match tokens[0] {
         "a" => Movement::A,
         "b" => Movement::B,
         "c" => Movement::C,
@@ -84,45 +84,31 @@ fn process_movement(tokens: &Vec<String>) -> Option<Command> {
     duration_ms.map(|duration_ms| Command::Movement(movement, duration_ms))
 }
 
-pub fn process_command(input: &str) -> Option<Command> {
+pub fn parse_command(input: &str) -> Option<Command> {
     let mut tokens: Vec<String> = input.split_whitespace().map(|t| t.to_lowercase()).collect();
-    tokens.retain(|token| token != "\u{e0000}");
-    if tokens.is_empty() {
-        return None;
-    }
+    tokens.retain(|token| *token != "\u{e0000}");
 
-    if let Some(cmd) = process_movement(&tokens) {
+    let tokens: Vec<&str> = tokens.iter().map(|t| t.as_str()).collect();
+    if let Some(cmd) = parse_movement(&tokens) {
         return Some(cmd);
     }
 
-    if tokens[0].as_str() != "tp" {
-        return None;
-    }
-
-    match tokens.get(1).map(|t| t.as_str()) {
-        Some("block") => {
-            let duration = tokens
-                .get(3)
-                .and_then(|t| duration_str::parse(t).ok())
-                .and_then(|d| chrono::Duration::from_std(d).ok())
-                .map(|d| chrono::Utc::now() + d);
-            tokens
-                .get(2)
-                .map(move |target| Command::Block(target.clone(), duration))
-        }
-        Some("unblock") => tokens.get(2).map(|target| Command::Unblock(target.clone())),
-        Some("op") => tokens
-            .get(2)
-            .map(|target| Command::AddOperator(target.clone())),
-        Some("deop") => tokens
-            .get(2)
-            .map(|target| Command::RemoveOperator(target.clone())),
+    match &tokens[..] {
+        ["tp", "block", target] => Some(Command::Block(target.to_string(), None)),
+        ["tp", "block", target, duration] => duration_str::parse(duration)
+            .ok()
+            .and_then(|d| chrono::Duration::from_std(d).ok())
+            .map(|d| chrono::Utc::now() + d)
+            .map(|d| Command::Block(target.to_string(), Some(d))),
+        ["tp", "unblock", target] => Some(Command::Unblock(target.to_string())),
+        ["tp", "op", target] => Some(Command::AddOperator(target.to_string())),
+        ["tp", "deop", target] => Some(Command::RemoveOperator(target.to_string())),
         _ => None,
     }
 }
 
 pub async fn run_commands<G: Gamepad + Sized>(
-    mut rx: Receiver<Message>,
+    rx: &mut Receiver<Message>,
     gamepad: &mut G,
     db_conn: &mut Connection,
 ) -> anyhow::Result<()> {
@@ -209,4 +195,153 @@ pub async fn run_commands<G: Gamepad + Sized>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod parsing_test {
+    use super::{parse_command, Command, Movement};
+
+    macro_rules! test_command {
+        ($id: ident, $cmd: expr, $result: expr) => {
+            #[test]
+            fn $id() {
+                assert_eq!(parse_command($cmd), $result);
+            }
+        };
+    }
+
+    test_command!(
+        parse_movement_sensitivity,
+        "A",
+        Some(Command::Movement(Movement::A, 500))
+    );
+    test_command!(
+        parse_movement_a,
+        "a",
+        Some(Command::Movement(Movement::A, 500))
+    );
+    test_command!(
+        parse_movement_b,
+        "b",
+        Some(Command::Movement(Movement::B, 500))
+    );
+    test_command!(
+        parse_movement_c,
+        "c",
+        Some(Command::Movement(Movement::C, 500))
+    );
+    test_command!(
+        parse_movement_x,
+        "x",
+        Some(Command::Movement(Movement::X, 500))
+    );
+    test_command!(
+        parse_movement_y,
+        "y",
+        Some(Command::Movement(Movement::Y, 500))
+    );
+    test_command!(
+        parse_movement_z,
+        "z",
+        Some(Command::Movement(Movement::Z, 500))
+    );
+    test_command!(
+        parse_movement_tl,
+        "tl",
+        Some(Command::Movement(Movement::TL, 500))
+    );
+    test_command!(
+        parse_movement_tr,
+        "tr",
+        Some(Command::Movement(Movement::TR, 500))
+    );
+    test_command!(
+        parse_movement_start,
+        "start",
+        Some(Command::Movement(Movement::Start, 500))
+    );
+    test_command!(
+        parse_movement_select,
+        "select",
+        Some(Command::Movement(Movement::Select, 500))
+    );
+    test_command!(
+        parse_movement_up,
+        "up",
+        Some(Command::Movement(Movement::Up, 500))
+    );
+    test_command!(
+        parse_movement_down,
+        "down",
+        Some(Command::Movement(Movement::Down, 500))
+    );
+    test_command!(
+        parse_movement_left,
+        "left",
+        Some(Command::Movement(Movement::Left, 500))
+    );
+    test_command!(
+        parse_movement_right,
+        "right",
+        Some(Command::Movement(Movement::Right, 500))
+    );
+    test_command!(
+        parse_movement_duration,
+        "a 2",
+        Some(Command::Movement(Movement::A, 2000))
+    );
+
+    test_command!(
+        parse_block,
+        "tp block user",
+        Some(Command::Block("user".to_string(), None))
+    );
+    test_command!(
+        parse_unblock,
+        "tp unblock user",
+        Some(Command::Unblock("user".to_string()))
+    );
+    test_command!(
+        parse_op,
+        "tp op user",
+        Some(Command::AddOperator("user".to_string()))
+    );
+    test_command!(
+        parse_deop,
+        "tp deop user",
+        Some(Command::RemoveOperator("user".to_string()))
+    );
+
+    test_command!(parse_invalid, "asdf", None);
+    test_command!(
+        parse_extraneous,
+        "tp block user 3m and then something",
+        None
+    );
+    test_command!(parse_movement_extraneous, "a 2 and something", None);
+    test_command!(parse_movement_invalid_time, "a b", None);
+    test_command!(parse_movement_time_too_large, "a 100", None);
+    test_command!(
+        parse_twitch_deduplicated,
+        "a \u{e0000}",
+        Some(Command::Movement(Movement::A, 500))
+    );
+    test_command!(parse_block_invalid_time, "tp block user notatime", None);
+
+    #[test]
+    fn parse_block_duration() {
+        let cmd = parse_command("tp block user 1h3m").unwrap();
+        let expected_duration =
+            chrono::Duration::from_std(std::time::Duration::new(3600 * 1 + 60 * 3, 0)).unwrap();
+        let curtime = chrono::Utc::now();
+        if let Command::Block(username, time) = cmd {
+            let time = time.expect("did not parse duration");
+            let duration = time - curtime;
+            let duration = expected_duration - duration;
+            assert_eq!(duration.num_seconds(), 0);
+            assert_eq!(username, "user");
+        } else {
+            unreachable!("Not a block command");
+        }
+    }
 }

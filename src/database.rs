@@ -1,8 +1,15 @@
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::path::Path;
 
-pub fn connect<T: AsRef<Path>>(path: T) -> rusqlite::Result<Connection> {
-    let conn = Connection::open(path)?;
+#[cfg(test)]
+pub fn clear_db(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute("delete from users", ())?;
+    conn.execute("delete from operators", ())?;
+    conn.execute("delete from blocked_users", ())?;
+    Ok(())
+}
+
+fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute(
         "create table if not exists users (
              id integer primary key,
@@ -29,6 +36,19 @@ pub fn connect<T: AsRef<Path>>(path: T) -> rusqlite::Result<Connection> {
         (),
     )?;
 
+    Ok(())
+}
+
+#[cfg(test)]
+pub fn in_memory() -> rusqlite::Result<Connection> {
+    let conn = Connection::open_in_memory()?;
+    init_db(&conn)?;
+    Ok(conn)
+}
+
+pub fn connect<T: AsRef<Path>>(path: T) -> rusqlite::Result<Connection> {
+    let conn = Connection::open(path)?;
+    init_db(&conn)?;
     Ok(conn)
 }
 
