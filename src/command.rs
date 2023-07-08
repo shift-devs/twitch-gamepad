@@ -1,8 +1,8 @@
 use crate::{database, gamepad::Gamepad};
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use core::time::Duration;
 use rusqlite::Connection;
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::{mpsc::Receiver, oneshot};
 use tracing::info;
 
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq, Ord)]
@@ -19,6 +19,21 @@ pub struct Message {
     pub sender_id: String,
     pub sender_name: String,
     pub privilege: Privilege,
+}
+
+#[derive(Debug)]
+pub struct WithReply<T, R> {
+    pub message: T,
+    pub reply_tx: oneshot::Sender<R>,
+}
+
+impl<T, R> WithReply<T, R> {
+    pub fn new(message: T) -> (Self, oneshot::Receiver<R>) {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let with_reply = Self { message, reply_tx };
+
+        (with_reply, reply_rx)
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -108,12 +123,15 @@ pub fn parse_command(input: &str) -> Option<Command> {
 }
 
 pub async fn run_commands<G: Gamepad + Sized>(
-    rx: &mut Receiver<Message>,
+    rx: &mut Receiver<WithReply<Message, Option<String>>>,
     gamepad: &mut G,
     db_conn: &mut Connection,
 ) -> anyhow::Result<()> {
     while let Some(msg) = rx.recv().await {
         use Command::*;
+
+        let reply_tx = msg.reply_tx;
+        let msg = msg.message;
 
         database::update_user(db_conn, &msg.sender_id, &msg.sender_name)
             .context("Failed to update user")?;
@@ -145,27 +163,47 @@ pub async fn run_commands<G: Gamepad + Sized>(
                 } else {
                     info!("Blocked movement from {}", msg.sender_name);
                 }
+
+                reply_tx
+                    .send(None)
+                    .map_err(|_| anyhow!("Failed to reply to command"))?;
             }
             AddOperator(user) => {
                 if msg.privilege >= Privilege::Moderator {
                     database::op_user(db_conn, &user).context("Failed to op user")?;
                     info!("Added {} as operator", user);
+
+                    reply_tx
+                        .send(Some(format!("Added {} as operator", user)))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
                 } else {
                     info!(
                         "{} attempted to add operator {} with insufficient privilege {:?}",
                         msg.sender_name, user, msg.privilege
                     );
+
+                    reply_tx
+                        .send(Some("You don't have permission to do that".to_string()))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
                 }
             }
             RemoveOperator(user) => {
                 if msg.privilege >= Privilege::Moderator {
                     database::deop_user(db_conn, &user).context("Failed to deop user")?;
                     info!("Removed {} as operator", user);
+
+                    reply_tx
+                        .send(Some(format!("Removed {} as operator", user)))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
                 } else {
                     info!(
                         "{} attempted to remove operator {} with insufficient privilege {:?}",
                         msg.sender_name, user, msg.privilege
                     );
+
+                    reply_tx
+                        .send(Some("You don't have permission to do that".to_string()))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
                 }
             }
             Block(user, duration) => {
@@ -173,22 +211,46 @@ pub async fn run_commands<G: Gamepad + Sized>(
                     database::block_user(db_conn, &user, duration)
                         .context("Failed to block user")?;
                     info!("Blocked user {} until time {:?}", user, duration);
+
+                    reply_tx
+                        .send(Some(format!(
+                            "Blocked {} {}",
+                            user,
+                            if let Some(duration) = duration {
+                                format!("until {}", duration)
+                            } else {
+                                "forever".to_owned()
+                            }
+                        )))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
                 } else {
                     info!(
                         "{} attempted to block {} until {:?} with insufficient privilege {:?}",
                         msg.sender_name, user, duration, msg.privilege
                     );
+
+                    reply_tx
+                        .send(Some("You don't have permission to do that".to_string()))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
                 }
             }
             Unblock(user) => {
                 if msg.privilege >= Privilege::Moderator {
                     database::unblock_user(db_conn, &user).context("Failed to unblock user")?;
                     info!("Unblocked user {}", user);
+
+                    reply_tx
+                        .send(Some(format!("Unblocked {}", user)))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
                 } else {
                     info!(
                         "{} attempted to unblock {} with insufficient privilege {:?}",
                         msg.sender_name, user, msg.privilege
                     );
+
+                    reply_tx
+                        .send(Some("You don't have permission to do that".to_string()))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
                 }
             }
         }
@@ -332,7 +394,7 @@ mod parsing_test {
     fn parse_block_duration() {
         let cmd = parse_command("tp block user 1h3m").unwrap();
         let expected_duration =
-            chrono::Duration::from_std(std::time::Duration::new(3600 * 1 + 60 * 3, 0)).unwrap();
+            chrono::Duration::from_std(std::time::Duration::new(3600 + 60 * 3, 0)).unwrap();
         let curtime = chrono::Utc::now();
         if let Command::Block(username, time) = cmd {
             let time = time.expect("did not parse duration");

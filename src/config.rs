@@ -3,8 +3,20 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 #[derive(Clone, Deserialize)]
+#[serde(tag = "type", content = "credentials")]
+pub enum TwitchAuth {
+    Anonymous,
+    Login {
+        client: String,
+        secret: String,
+        access: Option<String>,
+    },
+}
+
+#[derive(Clone, Deserialize)]
 pub struct TwitchConfig {
     pub channel_name: String,
+    pub auth: TwitchAuth,
 }
 
 #[derive(Clone, Deserialize)]

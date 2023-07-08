@@ -1,2 +1,13 @@
 [twitch]
 channel_name = "<your-channel-here>"
+
+[twitch.auth]
+
+# Anonymous, requires no credentials but cannot reply with messages
+#type = "Anonymous"
+
+type = "Login"
+
+[twitch.auth.credentials]
+client = "client_id"
+secret = "secret"
