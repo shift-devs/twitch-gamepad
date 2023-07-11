@@ -49,13 +49,13 @@ async fn main() {
     tracing_subscriber::fmt::init();
     let (config, cfg_path) = config::read_config().await.unwrap();
     let cfg_dir = cfg_path.parent().unwrap();
-    let channel = config.twitch.channel_name;
+    let channel = &config.twitch.channel_name;
 
     let db_path = cfg_dir.join("twitch_gamepad.db");
     let mut db_conn = database::connect(&db_path).unwrap();
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(100);
-    let (msg_join_handle, client_handle) = match config.twitch.auth {
+    let (msg_join_handle, client_handle) = match &config.twitch.auth {
         config::TwitchAuth::Anonymous => {
             twitch::run_twitch_irc_anonymous(channel.clone(), tx.clone())
         }
@@ -78,14 +78,20 @@ async fn main() {
                 twitch::bootstrap_tokens(
                     client.clone(),
                     secret.clone(),
-                    access.unwrap(),
+                    access.clone().unwrap(),
                     &token_path,
                 )
                 .await
                 .unwrap();
             }
 
-            run_twitch_irc_login(client, secret, &token_path, channel.clone(), tx.clone())
+            run_twitch_irc_login(
+                client.clone(),
+                secret.clone(),
+                &token_path,
+                channel.clone(),
+                tx.clone(),
+            )
         }
     };
 
@@ -94,7 +100,7 @@ async fn main() {
     let mut gamepad = gamepad::UinputGamepad::new().unwrap();
     client_handle.await.unwrap();
 
-    command::run_commands(&mut rx, &mut gamepad, &mut db_conn)
+    command::run_commands(&mut rx, &config, &mut gamepad, &mut db_conn)
         .await
         .unwrap();
 

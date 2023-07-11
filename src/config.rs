@@ -1,6 +1,17 @@
 use anyhow::anyhow;
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
+
+pub type GameName = String;
+
+#[derive(Clone, Deserialize)]
+pub struct GameCommandString(pub String);
+
+#[derive(Clone)]
+pub struct GameCommand {
+    pub command: String,
+    pub args: Vec<String>,
+}
 
 #[derive(Clone, Deserialize)]
 #[serde(tag = "type", content = "credentials")]
@@ -22,6 +33,7 @@ pub struct TwitchConfig {
 #[derive(Clone, Deserialize)]
 pub struct Config {
     pub twitch: TwitchConfig,
+    pub games: Option<BTreeMap<GameName, GameCommandString>>,
 }
 
 fn cfg_path() -> anyhow::Result<PathBuf> {
@@ -50,4 +62,28 @@ pub async fn read_config() -> anyhow::Result<(Config, PathBuf)> {
     let cfg = tokio::fs::read_to_string(&cfg_path).await?;
     let cfg: Config = toml::from_str(&cfg)?;
     Ok((cfg, cfg_path))
+}
+
+impl GameCommandString {
+    pub fn to_command(&self) -> GameCommand {
+        let mut args = self.0.split(' ').map(|s| s.to_owned());
+        let command = args.next().expect("game command should include a command");
+        let args: Vec<String> = args.collect();
+
+        GameCommand { command, args }
+    }
+}
+
+impl Config {
+    pub fn game_command_list(&self) -> BTreeMap<GameName, GameCommand> {
+        self.games
+            .as_ref()
+            .map(|games| {
+                games
+                    .iter()
+                    .map(|(name, cmd)| (name.to_owned(), cmd.to_command()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }

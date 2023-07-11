@@ -14,7 +14,8 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
         "create table if not exists users (
              id integer primary key,
              twitch_id text not null unique,
-             name text not null unique
+             name text not null unique,
+             last_command_time text
          )",
         (),
     )?;
@@ -54,8 +55,8 @@ pub fn connect<T: AsRef<Path>>(path: T) -> rusqlite::Result<Connection> {
 
 pub fn update_user(conn: &Connection, id: &str, name: &str) -> rusqlite::Result<()> {
     conn.execute(
-        "insert or replace into users(twitch_id, name) values (?1, ?2)",
-        params![id, name],
+        "insert or replace into users(twitch_id, name, last_command_time) values (?1, ?2, ?3)",
+        params![id, name, chrono::Utc::now()],
     )?;
     Ok(())
 }
@@ -144,6 +145,14 @@ pub fn unblock_user(conn: &mut Connection, name: &str) -> rusqlite::Result<()> {
     }
 }
 
+pub fn list_blocked_users(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "select u.name from users u inner join blocked_users b on b.twitch_id = u.twitch_id",
+    )?;
+    let users: rusqlite::Result<Vec<String>> = stmt.query_map((), |row| row.get(0))?.collect();
+    users
+}
+
 pub fn op_user(conn: &mut Connection, name: &str) -> rusqlite::Result<bool> {
     let mut tx = conn.transaction()?;
     match get_user_id_from_name(&mut tx, name) {
@@ -173,4 +182,12 @@ pub fn deop_user(conn: &mut Connection, name: &str) -> rusqlite::Result<()> {
         }
         _ => Ok(()),
     }
+}
+
+pub fn list_op_users(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "select u.name from users u inner join operators o on o.twitch_id = u.twitch_id",
+    )?;
+    let users: rusqlite::Result<Vec<String>> = stmt.query_map((), |row| row.get(0))?.collect();
+    users
 }

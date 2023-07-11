@@ -1,4 +1,4 @@
-use crate::{database, gamepad::Gamepad};
+use crate::{config::Config, database, gamepad::Gamepad};
 use anyhow::{anyhow, Context};
 use core::time::Duration;
 use rusqlite::Connection;
@@ -57,12 +57,27 @@ pub enum Movement {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+pub enum PartialCommand {
+    AddOperator,
+    RemoveOperator,
+    Block,
+    Unblock,
+    List,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Command {
     Movement(Movement, u32),
     AddOperator(String),
     RemoveOperator(String),
     Block(String, Option<chrono::DateTime<chrono::Utc>>),
     Unblock(String),
+    Partial(PartialCommand),
+    ListBlocked,
+    ListOperators,
+    ListGames,
+    PrintHelp,
 }
 
 fn parse_movement(tokens: &Vec<&str>) -> Option<Command> {
@@ -109,24 +124,38 @@ pub fn parse_command(input: &str) -> Option<Command> {
     }
 
     match &tokens[..] {
+        ["tp", "block"] => Some(Command::Partial(PartialCommand::Block)),
         ["tp", "block", target] => Some(Command::Block(target.to_string(), None)),
         ["tp", "block", target, duration] => duration_str::parse(duration)
             .ok()
             .and_then(|d| chrono::Duration::from_std(d).ok())
             .map(|d| chrono::Utc::now() + d)
-            .map(|d| Command::Block(target.to_string(), Some(d))),
+            .map(|d| Command::Block(target.to_string(), Some(d)))
+            .or(Some(Command::Partial(PartialCommand::Block))),
+        ["tp", "unblock"] => Some(Command::Partial(PartialCommand::Unblock)),
         ["tp", "unblock", target] => Some(Command::Unblock(target.to_string())),
+        ["tp", "op"] => Some(Command::Partial(PartialCommand::AddOperator)),
         ["tp", "op", target] => Some(Command::AddOperator(target.to_string())),
+        ["tp", "deop"] => Some(Command::Partial(PartialCommand::RemoveOperator)),
         ["tp", "deop", target] => Some(Command::RemoveOperator(target.to_string())),
+        ["tp", "games"] => Some(Command::ListGames),
+        ["tp", "list"] => Some(Command::Partial(PartialCommand::List)),
+        ["tp", "list", "games"] => Some(Command::ListGames),
+        ["tp", "help" | "commands"] => Some(Command::PrintHelp),
+        ["tp", "list", "block" | "blocks" | "blocked"] => Some(Command::ListBlocked),
+        ["tp", "list", "ops" | "operators" | "op"] => Some(Command::ListOperators),
         _ => None,
     }
 }
 
-pub async fn run_commands<G: Gamepad + Sized>(
+pub async fn run_commands<G: Gamepad>(
     rx: &mut Receiver<WithReply<Message, Option<String>>>,
+    config: &Config,
     gamepad: &mut G,
     db_conn: &mut Connection,
 ) -> anyhow::Result<()> {
+    let game_commands = config.game_command_list();
+
     while let Some(msg) = rx.recv().await {
         use Command::*;
 
@@ -208,12 +237,12 @@ pub async fn run_commands<G: Gamepad + Sized>(
             }
             Block(user, duration) => {
                 if msg.privilege >= Privilege::Moderator {
-                    database::block_user(db_conn, &user, duration)
+                    let user_blocked = database::block_user(db_conn, &user, duration)
                         .context("Failed to block user")?;
-                    info!("Blocked user {} until time {:?}", user, duration);
 
-                    reply_tx
-                        .send(Some(format!(
+                    let reply_msg = if user_blocked {
+                        info!("Blocked user {} until time {:?}", user, duration);
+                        format!(
                             "Blocked {} {}",
                             user,
                             if let Some(duration) = duration {
@@ -221,7 +250,14 @@ pub async fn run_commands<G: Gamepad + Sized>(
                             } else {
                                 "forever".to_owned()
                             }
-                        )))
+                        )
+                    } else {
+                        info!("Block for user {} cannot be applied, unknown user", user);
+                        format!("Could not find user {}, they probably haven't played", user)
+                    };
+
+                    reply_tx
+                        .send(Some(reply_msg))
                         .map_err(|_| anyhow!("Failed to reply to command"))?;
                 } else {
                     info!(
@@ -253,6 +289,53 @@ pub async fn run_commands<G: Gamepad + Sized>(
                         .map_err(|_| anyhow!("Failed to reply to command"))?;
                 }
             }
+            Partial(partial) => {
+                use PartialCommand::*;
+                let diag_msg = match partial {
+                    AddOperator => "Usage: tp op <user>",
+                    RemoveOperator => "Usage: tp deop <user>",
+                    Block => "Usage: tp block <user> [optional: duration]",
+                    Unblock => "Usage: tp unblock <user>",
+                    List => "Usage: tp list games | blocked | ops",
+                };
+
+                reply_tx
+                    .send(Some(diag_msg.to_string()))
+                    .map_err(|_| anyhow!("Failed to reply to command"))?;
+            }
+            ListGames => {
+                let games: Vec<&str> = game_commands.keys().map(|game| game.as_str()).collect();
+                reply_tx
+                    .send(Some(games.join(", ")))
+                    .map_err(|_| anyhow!("Failed to reply to command"))?;
+            }
+            ListOperators => {
+                let operators = database::list_op_users(db_conn)?;
+                reply_tx
+                    .send(Some(operators.join(", ")))
+                    .map_err(|_| anyhow!("Failed to reply to command"))?;
+            }
+            ListBlocked => {
+                let blocked_users = database::list_blocked_users(db_conn)?;
+                reply_tx
+                    .send(Some(blocked_users.join(", ")))
+                    .map_err(|_| anyhow!("Failed to reply to command"))?;
+            }
+            PrintHelp => {
+                let mut available_commands = Vec::new();
+                available_commands
+                    .push("Move with standard controller buttons (up, down, a, b, tl, tr, etc.)");
+                if msg.privilege >= Privilege::Moderator {
+                    available_commands.push("tp block/unblock - block or unblock a user");
+                    available_commands.push("tp op/deop - promote user to operator");
+                    available_commands.push("tp games - list games");
+                    available_commands.push("tp switch - switch game");
+                    available_commands.push("tp reset - reset console");
+                }
+                reply_tx
+                    .send(Some(available_commands.join(", ")))
+                    .map_err(|_| anyhow!("Failed to reply to command"))?;
+            }
         }
     }
 
@@ -261,7 +344,7 @@ pub async fn run_commands<G: Gamepad + Sized>(
 
 #[cfg(test)]
 mod parsing_test {
-    use super::{parse_command, Command, Movement};
+    use super::{parse_command, Command, Movement, PartialCommand};
 
     macro_rules! test_command {
         ($id: ident, $cmd: expr, $result: expr) => {
@@ -374,6 +457,41 @@ mod parsing_test {
         Some(Command::RemoveOperator("user".to_string()))
     );
 
+    test_command!(parse_help_help, "tp help", Some(Command::PrintHelp));
+    test_command!(parse_help_commands, "tp commands", Some(Command::PrintHelp));
+    test_command!(
+        parse_list_blocked_blocked,
+        "tp list blocked",
+        Some(Command::ListBlocked)
+    );
+    test_command!(
+        parse_list_blocked_blocks,
+        "tp list blocks",
+        Some(Command::ListBlocked)
+    );
+    test_command!(
+        parse_list_blocked_block,
+        "tp list block",
+        Some(Command::ListBlocked)
+    );
+    test_command!(
+        parse_list_op_ops,
+        "tp list ops",
+        Some(Command::ListOperators)
+    );
+    test_command!(
+        parse_list_op_operators,
+        "tp list operators",
+        Some(Command::ListOperators)
+    );
+    test_command!(parse_list_op_op, "tp list op", Some(Command::ListOperators));
+    test_command!(parse_list_games, "tp list games", Some(Command::ListGames));
+    test_command!(
+        parse_list_games_direct,
+        "tp games",
+        Some(Command::ListGames)
+    );
+
     test_command!(parse_invalid, "asdf", None);
     test_command!(
         parse_extraneous,
@@ -388,7 +506,37 @@ mod parsing_test {
         "a \u{e0000}",
         Some(Command::Movement(Movement::A, 500))
     );
-    test_command!(parse_block_invalid_time, "tp block user notatime", None);
+    test_command!(
+        parse_block_invalid_time,
+        "tp block user notatime",
+        Some(Command::Partial(PartialCommand::Block))
+    );
+
+    test_command!(
+        parse_partial_block,
+        "tp block",
+        Some(Command::Partial(PartialCommand::Block))
+    );
+    test_command!(
+        parse_partial_unblock,
+        "tp unblock",
+        Some(Command::Partial(PartialCommand::Unblock))
+    );
+    test_command!(
+        parse_partial_op,
+        "tp op",
+        Some(Command::Partial(PartialCommand::AddOperator))
+    );
+    test_command!(
+        parse_partial_deop,
+        "tp deop",
+        Some(Command::Partial(PartialCommand::RemoveOperator))
+    );
+    test_command!(
+        parse_partial_list,
+        "tp list",
+        Some(Command::Partial(PartialCommand::List))
+    );
 
     #[test]
     fn parse_block_duration() {
