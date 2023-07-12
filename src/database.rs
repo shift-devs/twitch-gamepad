@@ -14,8 +14,7 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
         "create table if not exists users (
              id integer primary key,
              twitch_id text not null unique,
-             name text not null unique,
-             last_command_time text
+             name text not null unique
          )",
         (),
     )?;
@@ -55,8 +54,8 @@ pub fn connect<T: AsRef<Path>>(path: T) -> rusqlite::Result<Connection> {
 
 pub fn update_user(conn: &Connection, id: &str, name: &str) -> rusqlite::Result<()> {
     conn.execute(
-        "insert or replace into users(twitch_id, name, last_command_time) values (?1, ?2, ?3)",
-        params![id, name, chrono::Utc::now()],
+        "insert or replace into users(twitch_id, name) values (?1, ?2)",
+        params![id, name],
     )?;
     Ok(())
 }

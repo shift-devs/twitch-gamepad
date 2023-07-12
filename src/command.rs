@@ -1,8 +1,16 @@
-use crate::{config::Config, database, gamepad::Gamepad};
+use crate::{
+    config::{Config, GameName},
+    database,
+    game_runner::{self, GameRunner},
+    gamepad::Gamepad,
+};
 use anyhow::{anyhow, Context};
 use core::time::Duration;
 use rusqlite::Connection;
-use tokio::sync::{mpsc::Receiver, oneshot};
+use tokio::sync::{
+    mpsc::{Receiver, Sender},
+    oneshot,
+};
 use tracing::info;
 
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq, Ord)]
@@ -53,6 +61,7 @@ pub enum Movement {
     Right,
     Start,
     Select,
+    Mode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +71,7 @@ pub enum PartialCommand {
     RemoveOperator,
     Block,
     Unblock,
+    Game,
     List,
 }
 
@@ -73,11 +83,15 @@ pub enum Command {
     RemoveOperator(String),
     Block(String, Option<chrono::DateTime<chrono::Utc>>),
     Unblock(String),
+    Game(GameName),
+    Stop,
     Partial(PartialCommand),
     ListBlocked,
     ListOperators,
     ListGames,
     PrintHelp,
+    SaveState,
+    LoadState,
 }
 
 fn parse_movement(tokens: &Vec<&str>) -> Option<Command> {
@@ -100,6 +114,7 @@ fn parse_movement(tokens: &Vec<&str>) -> Option<Command> {
         "right" => Movement::Right,
         "start" => Movement::Start,
         "select" => Movement::Select,
+        //"mode" => Movement::Mode,
         _ => return None,
     };
 
@@ -139,11 +154,19 @@ pub fn parse_command(input: &str) -> Option<Command> {
         ["tp", "deop"] => Some(Command::Partial(PartialCommand::RemoveOperator)),
         ["tp", "deop", target] => Some(Command::RemoveOperator(target.to_string())),
         ["tp", "games"] => Some(Command::ListGames),
+        ["tp", "game" | "switch" | "start"] => Some(Command::Partial(PartialCommand::Game)),
+        ["tp", "game" | "switch" | "start", game] => {
+            let game: GameName = game.to_string();
+            Some(Command::Game(game))
+        }
+        ["tp", "stop"] => Some(Command::Stop),
         ["tp", "list"] => Some(Command::Partial(PartialCommand::List)),
         ["tp", "list", "games"] => Some(Command::ListGames),
         ["tp", "help" | "commands"] => Some(Command::PrintHelp),
         ["tp", "list", "block" | "blocks" | "blocked"] => Some(Command::ListBlocked),
         ["tp", "list", "ops" | "operators" | "op"] => Some(Command::ListOperators),
+        ["tp", "save"] => Some(Command::SaveState),
+        ["tp", "load"] => Some(Command::LoadState),
         _ => None,
     }
 }
@@ -153,6 +176,7 @@ pub async fn run_commands<G: Gamepad>(
     config: &Config,
     gamepad: &mut G,
     db_conn: &mut Connection,
+    game_runner_tx: &mut Sender<game_runner::GameRunner>,
 ) -> anyhow::Result<()> {
     let game_commands = config.game_command_list();
 
@@ -185,9 +209,9 @@ pub async fn run_commands<G: Gamepad>(
                     .context("Failed to check for blocked user")?
                 {
                     info!("Sending movement {:?}", msg.command);
-                    gamepad.press(&movement)?;
+                    gamepad.press(movement)?;
                     tokio::time::sleep(Duration::from_millis(duration as u64)).await;
-                    gamepad.release(&movement)?;
+                    gamepad.release(movement)?;
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 } else {
                     info!("Blocked movement from {}", msg.sender_name);
@@ -289,6 +313,51 @@ pub async fn run_commands<G: Gamepad>(
                         .map_err(|_| anyhow!("Failed to reply to command"))?;
                 }
             }
+            Game(game) => {
+                if msg.privilege >= Privilege::Moderator {
+                    if let Some(game_command) = game_commands.get(&game) {
+                        game_runner_tx
+                            .send(GameRunner::SwitchTo(game_command.clone()))
+                            .await?;
+                        reply_tx
+                            .send(None)
+                            .map_err(|_| anyhow!("Failed to reply to command"))?;
+                    } else {
+                        reply_tx
+                            .send(Some(format!(
+                                "No game {} found, see full list with \"tp games\"",
+                                game
+                            )))
+                            .map_err(|_| anyhow!("Failed to reply to command"))?;
+                    }
+                } else {
+                    info!(
+                        "{} attempted to switch game to {} with insufficient privilege {:?}",
+                        msg.sender_name, game, msg.privilege
+                    );
+
+                    reply_tx
+                        .send(Some("You don't have permission to do that".to_string()))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
+                }
+            }
+            Stop => {
+                if msg.privilege >= Privilege::Moderator {
+                    game_runner_tx.send(GameRunner::Stop).await?;
+                    reply_tx
+                        .send(None)
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
+                } else {
+                    info!(
+                        "{} attempted to stop with insufficient privilege {:?}",
+                        msg.sender_name, msg.privilege
+                    );
+
+                    reply_tx
+                        .send(Some("You don't have permission to do that".to_string()))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
+                }
+            }
             Partial(partial) => {
                 use PartialCommand::*;
                 let diag_msg = match partial {
@@ -296,6 +365,7 @@ pub async fn run_commands<G: Gamepad>(
                     RemoveOperator => "Usage: tp deop <user>",
                     Block => "Usage: tp block <user> [optional: duration]",
                     Unblock => "Usage: tp unblock <user>",
+                    Game => "Usage: tp game <game-name>",
                     List => "Usage: tp list games | blocked | ops",
                 };
 
@@ -335,6 +405,62 @@ pub async fn run_commands<G: Gamepad>(
                 reply_tx
                     .send(Some(available_commands.join(", ")))
                     .map_err(|_| anyhow!("Failed to reply to command"))?;
+            }
+            SaveState => {
+                if msg.privilege >= Privilege::Operator {
+                    use crate::command::Movement;
+
+                    // FIXME: Make this more generic
+                    // Right now it's tied to a specific hotkey combo in retroarch
+                    gamepad.press(Movement::Mode)?;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    gamepad.press(Movement::A)?;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    gamepad.release(Movement::Mode)?;
+                    gamepad.release(Movement::A)?;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+
+                    info!("{} saved state", msg.sender_name);
+                    reply_tx
+                        .send(Some("Saved game state".to_string()))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
+                } else {
+                    info!(
+                        "{} attempted to save state with insufficient privilege {:?}",
+                        msg.sender_name, msg.privilege
+                    );
+                    reply_tx
+                        .send(Some("You don't have permission to do that".to_string()))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
+                }
+            }
+            LoadState => {
+                if msg.privilege >= Privilege::Operator {
+                    use crate::command::Movement;
+
+                    // FIXME: Make this more generic
+                    // Right now it's tied to a specific hotkey combo in retroarch
+                    gamepad.press(Movement::Mode)?;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    gamepad.press(Movement::B)?;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    gamepad.release(Movement::Mode)?;
+                    gamepad.release(Movement::B)?;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+
+                    info!("{} loaded state", msg.sender_name);
+                    reply_tx
+                        .send(Some("Loaded game state".to_string()))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
+                } else {
+                    info!(
+                        "{} attempted to save state with insufficient privilege {:?}",
+                        msg.sender_name, msg.privilege
+                    );
+                    reply_tx
+                        .send(Some("You don't have permission to do that".to_string()))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
+                }
             }
         }
     }
@@ -537,6 +663,9 @@ mod parsing_test {
         "tp list",
         Some(Command::Partial(PartialCommand::List))
     );
+
+    test_command!(parse_save, "tp save", Some(Command::SaveState));
+    test_command!(parse_load, "tp load", Some(Command::LoadState));
 
     #[test]
     fn parse_block_duration() {

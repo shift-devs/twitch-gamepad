@@ -5,6 +5,7 @@ use twitch::run_twitch_irc_login;
 mod command;
 mod config;
 mod database;
+mod game_runner;
 mod gamepad;
 mod twitch;
 
@@ -100,10 +101,19 @@ async fn main() {
     let mut gamepad = gamepad::UinputGamepad::new().unwrap();
     client_handle.await.unwrap();
 
-    command::run_commands(&mut rx, &config, &mut gamepad, &mut db_conn)
-        .await
-        .unwrap();
+    let (game_runner_handle, mut game_runner_tx) = game_runner::run_game_runner();
+
+    command::run_commands(
+        &mut rx,
+        &config,
+        &mut gamepad,
+        &mut db_conn,
+        &mut game_runner_tx,
+    )
+    .await
+    .unwrap();
 
     msg_join_handle.await.unwrap();
     stdin_join_handle.await.unwrap();
+    game_runner_handle.await.unwrap();
 }

@@ -7,7 +7,7 @@ pub type GameName = String;
 #[derive(Clone, Deserialize)]
 pub struct GameCommandString(pub String);
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GameCommand {
     pub command: String,
     pub args: Vec<String>,

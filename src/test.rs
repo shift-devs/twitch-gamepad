@@ -6,6 +6,7 @@ use crate::{
     command::{self, Command, Message, Movement, Privilege},
     config::{Config, GameCommandString, GameName},
     database,
+    game_runner::GameRunner,
     gamepad::Gamepad,
 };
 
@@ -21,13 +22,13 @@ struct DummyGamepad {
 }
 
 impl Gamepad for DummyGamepad {
-    fn press(&mut self, movement: &crate::command::Movement) -> anyhow::Result<()> {
-        self.actions.push_back((*movement, ActionType::Press));
+    fn press(&mut self, movement: crate::command::Movement) -> anyhow::Result<()> {
+        self.actions.push_back((movement, ActionType::Press));
         Ok(())
     }
 
-    fn release(&mut self, movement: &crate::command::Movement) -> anyhow::Result<()> {
-        self.actions.push_back((*movement, ActionType::Release));
+    fn release(&mut self, movement: crate::command::Movement) -> anyhow::Result<()> {
+        self.actions.push_back((movement, ActionType::Release));
         Ok(())
     }
 }
@@ -48,6 +49,7 @@ struct TestSetup {
     msg_rx: tokio::sync::mpsc::Receiver<command::WithReply<Message, Option<String>>>,
     db_conn: rusqlite::Connection,
     gamepad: DummyGamepad,
+    game_runner_cmds: Vec<GameRunner>,
 }
 
 impl TestSetup {
@@ -57,7 +59,6 @@ impl TestSetup {
     ) {
         let db_conn = database::in_memory().unwrap();
         database::clear_db(&db_conn).unwrap();
-        eprintln!("new called");
 
         let gamepad = DummyGamepad::default();
         let (tx, rx) = tokio::sync::mpsc::channel(10);
@@ -67,6 +68,7 @@ impl TestSetup {
                 msg_rx: rx,
                 db_conn,
                 gamepad,
+                game_runner_cmds: vec![],
             },
             tx,
         )
@@ -87,13 +89,30 @@ impl TestSetup {
             },
             games,
         };
+
+        let (mut tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let jh = tokio::task::spawn(async move {
+            let mut runner_cmds = Vec::new();
+            while let Some(cmd) = rx.recv().await {
+                runner_cmds.push(cmd);
+            }
+
+            runner_cmds
+        });
+
         command::run_commands(
             &mut self.msg_rx,
             &config,
             &mut self.gamepad,
             &mut self.db_conn,
+            &mut tx,
         )
-        .await?;
+        .await
+        .unwrap();
+        std::mem::drop(tx);
+
+        let mut runner_cmds = jh.await.unwrap();
+        self.game_runner_cmds.append(&mut runner_cmds);
         Ok(())
     }
 }
@@ -724,4 +743,261 @@ async fn can_list_games() {
 
     test.run_with_games(Some(games)).await.unwrap();
     join_handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn operator_can_save_state() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_id = "user_id".to_owned();
+    let user_name = "user_name".to_owned();
+
+    database::update_user(&test.db_conn, &user_id, &user_name).unwrap();
+    database::op_user(&mut test.db_conn, &user_name).unwrap();
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::SaveState,
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Standard,
+            },
+        )
+        .await;
+    });
+
+    test.run().await.unwrap();
+    join_handle.await.unwrap();
+    test.gamepad.expect_sequence(&[
+        (Movement::Mode, ActionType::Press),
+        (Movement::A, ActionType::Press),
+        (Movement::Mode, ActionType::Release),
+        (Movement::A, ActionType::Release),
+    ]);
+}
+
+#[tokio::test]
+async fn operator_can_load_state() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_id = "user_id".to_owned();
+    let user_name = "user_name".to_owned();
+
+    database::update_user(&test.db_conn, &user_id, &user_name).unwrap();
+    database::op_user(&mut test.db_conn, &user_name).unwrap();
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::LoadState,
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Standard,
+            },
+        )
+        .await;
+    });
+
+    test.run().await.unwrap();
+    join_handle.await.unwrap();
+    test.gamepad.expect_sequence(&[
+        (Movement::Mode, ActionType::Press),
+        (Movement::B, ActionType::Press),
+        (Movement::Mode, ActionType::Release),
+        (Movement::B, ActionType::Release),
+    ]);
+}
+
+#[tokio::test]
+async fn user_cannot_save_state() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_id = "user_id".to_owned();
+    let user_name = "user_name".to_owned();
+
+    database::update_user(&test.db_conn, &user_id, &user_name).unwrap();
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::SaveState,
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Standard,
+            },
+        )
+        .await;
+    });
+
+    test.run().await.unwrap();
+    join_handle.await.unwrap();
+    test.gamepad.expect_sequence(&[]);
+}
+
+#[tokio::test]
+async fn user_cannot_load_state() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_id = "user_id".to_owned();
+    let user_name = "user_name".to_owned();
+
+    database::update_user(&test.db_conn, &user_id, &user_name).unwrap();
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::LoadState,
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Standard,
+            },
+        )
+        .await;
+    });
+
+    test.run().await.unwrap();
+    join_handle.await.unwrap();
+    test.gamepad.expect_sequence(&[]);
+}
+
+#[tokio::test]
+async fn moderator_can_switch_games() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_id = "user_id".to_owned();
+    let user_name = "user_name".to_owned();
+
+    let mut games: BTreeMap<GameName, GameCommandString> = BTreeMap::new();
+
+    let name: GameName = "Game 1".to_owned();
+    games.insert(name, GameCommandString("cmdforgame1 --command".to_owned()));
+
+    let name: GameName = "Game 2".to_owned();
+    let game2_cmd = GameCommandString("cmdforgame2 --command".to_owned());
+    games.insert(name, game2_cmd.clone());
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Game("Game 2".to_owned()),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Moderator,
+            },
+        )
+        .await;
+    });
+
+    test.run_with_games(Some(games)).await.unwrap();
+    join_handle.await.unwrap();
+
+    assert_eq!(test.game_runner_cmds.len(), 1);
+    assert_eq!(
+        test.game_runner_cmds[0],
+        GameRunner::SwitchTo(game2_cmd.to_command())
+    );
+}
+
+#[tokio::test]
+async fn moderator_can_stop_gameplay() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_id = "user_id".to_owned();
+    let user_name = "user_name".to_owned();
+
+    let mut games: BTreeMap<GameName, GameCommandString> = BTreeMap::new();
+
+    let name: GameName = "Game 1".to_owned();
+    games.insert(name, GameCommandString("cmdforgame1 --command".to_owned()));
+
+    let name: GameName = "Game 2".to_owned();
+    let game2_cmd = GameCommandString("cmdforgame2 --command".to_owned());
+    games.insert(name, game2_cmd.clone());
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Stop,
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Moderator,
+            },
+        )
+        .await;
+    });
+
+    test.run_with_games(Some(games)).await.unwrap();
+    join_handle.await.unwrap();
+
+    assert_eq!(test.game_runner_cmds.len(), 1);
+    assert_eq!(test.game_runner_cmds[0], GameRunner::Stop);
+}
+
+#[tokio::test]
+async fn user_cannot_switch_games() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_id = "user_id".to_owned();
+    let user_name = "user_name".to_owned();
+
+    let mut games: BTreeMap<GameName, GameCommandString> = BTreeMap::new();
+
+    let name: GameName = "Game 1".to_owned();
+    games.insert(name, GameCommandString("cmdforgame1 --command".to_owned()));
+
+    let name: GameName = "Game 2".to_owned();
+    let game2_cmd = GameCommandString("cmdforgame2 --command".to_owned());
+    games.insert(name, game2_cmd.clone());
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Game("Game 2".to_owned()),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Standard,
+            },
+        )
+        .await;
+    });
+
+    test.run_with_games(Some(games)).await.unwrap();
+    join_handle.await.unwrap();
+
+    assert_eq!(test.game_runner_cmds.len(), 0);
+}
+
+#[tokio::test]
+async fn user_cannot_stop_gameplay() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_id = "user_id".to_owned();
+    let user_name = "user_name".to_owned();
+
+    let mut games: BTreeMap<GameName, GameCommandString> = BTreeMap::new();
+
+    let name: GameName = "Game 1".to_owned();
+    games.insert(name, GameCommandString("cmdforgame1 --command".to_owned()));
+
+    let name: GameName = "Game 2".to_owned();
+    let game2_cmd = GameCommandString("cmdforgame2 --command".to_owned());
+    games.insert(name, game2_cmd.clone());
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Stop,
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Standard,
+            },
+        )
+        .await;
+    });
+
+    test.run_with_games(Some(games)).await.unwrap();
+    join_handle.await.unwrap();
+
+    assert_eq!(test.game_runner_cmds.len(), 0);
 }

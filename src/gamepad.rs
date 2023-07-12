@@ -2,8 +2,8 @@ use crate::command::Movement;
 use uinput::event::{absolute, controller};
 
 pub trait Gamepad {
-    fn press(&mut self, movement: &Movement) -> anyhow::Result<()>;
-    fn release(&mut self, movement: &Movement) -> anyhow::Result<()>;
+    fn press(&mut self, movement: Movement) -> anyhow::Result<()>;
+    fn release(&mut self, movement: Movement) -> anyhow::Result<()>;
 }
 
 pub struct UinputGamepad {
@@ -52,21 +52,22 @@ impl UinputGamepad {
             Right => Controller::DPad(DPad::Right),
             Start => Controller::GamePad(GamePad::Start),
             Select => Controller::GamePad(GamePad::Select),
+            Mode => Controller::GamePad(GamePad::Mode),
         }
     }
 }
 
 impl Gamepad for UinputGamepad {
-    fn press(&mut self, movement: &Movement) -> anyhow::Result<()> {
-        let cmd = Self::map_movement(movement);
+    fn press(&mut self, movement: Movement) -> anyhow::Result<()> {
+        let cmd = Self::map_movement(&movement);
 
         self.gamepad.press(&cmd).unwrap();
         self.gamepad.synchronize().unwrap();
         Ok(())
     }
 
-    fn release(&mut self, movement: &Movement) -> anyhow::Result<()> {
-        let cmd = Self::map_movement(movement);
+    fn release(&mut self, movement: Movement) -> anyhow::Result<()> {
+        let cmd = Self::map_movement(&movement);
 
         self.gamepad.release(&cmd).unwrap();
         self.gamepad.synchronize().unwrap();
