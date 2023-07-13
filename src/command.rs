@@ -13,6 +13,32 @@ use tokio::sync::{
 };
 use tracing::info;
 
+const CONFIG_KV_ANARCHY_MODE: &str = "anarchy_mode";
+const CONFIG_KV_COOLDOWN_DURATION: &str = "cooldown";
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum AnarchyType {
+    Anarchy,
+    Democracy,
+}
+
+impl AnarchyType {
+    pub const fn to_str(&self) -> &str {
+        match self {
+            Self::Anarchy => "anarchy",
+            Self::Democracy => "democracy",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "anarchy" => Some(Self::Anarchy),
+            "democracy" => Some(Self::Democracy),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq, Ord)]
 pub enum Privilege {
     Standard = 0,
@@ -73,6 +99,8 @@ pub enum PartialCommand {
     Unblock,
     Game,
     List,
+    SetCooldown,
+    SetAnarchyMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,6 +120,10 @@ pub enum Command {
     PrintHelp,
     SaveState,
     LoadState,
+    Reset,
+    SetCooldown(chrono::Duration),
+    SetAnarchyMode(AnarchyType),
+    PrintAnarchyMode,
 }
 
 fn parse_movement(tokens: &Vec<&str>) -> Option<Command> {
@@ -167,6 +199,17 @@ pub fn parse_command(input: &str) -> Option<Command> {
         ["tp", "list", "ops" | "operators" | "op"] => Some(Command::ListOperators),
         ["tp", "save"] => Some(Command::SaveState),
         ["tp", "load"] => Some(Command::LoadState),
+        ["tp", "reset"] => Some(Command::Reset),
+        ["tp", "mode"] => Some(Command::PrintAnarchyMode),
+        ["tp", "mode", "anarchy"] => Some(Command::SetAnarchyMode(AnarchyType::Anarchy)),
+        ["tp", "mode", "democracy"] => Some(Command::SetAnarchyMode(AnarchyType::Democracy)),
+        ["tp", "mode", _] => Some(Command::Partial(PartialCommand::SetAnarchyMode)),
+        ["tp", "cooldown"] => Some(Command::Partial(PartialCommand::SetCooldown)),
+        ["tp", "cooldown", cd] => duration_str::parse(cd)
+            .ok()
+            .and_then(|d| chrono::Duration::from_std(d).ok())
+            .map(|d| Command::SetCooldown(d))
+            .or(Some(Command::Partial(PartialCommand::SetCooldown))),
         _ => None,
     }
 }
@@ -179,6 +222,28 @@ pub async fn run_commands<G: Gamepad>(
     game_runner_tx: &mut Sender<game_runner::GameRunner>,
 ) -> anyhow::Result<()> {
     let game_commands = config.game_command_list();
+
+    let anarchy_mode = database::get_or_set_kv(db_conn, CONFIG_KV_ANARCHY_MODE, AnarchyType::Democracy.to_str().to_owned())?;
+    let mut anarchy_mode = match AnarchyType::from_str(&anarchy_mode) {
+        Some(am) => am,
+        None => {
+            tracing::warn!("Invalid anarchy_mode {} in database, defaulting to democracy", anarchy_mode);
+            database::set_kv(db_conn, CONFIG_KV_ANARCHY_MODE, AnarchyType::Democracy.to_str())?;
+            AnarchyType::Democracy
+        },
+    };
+
+    let cooldown: String = database::get_or_set_kv(db_conn, CONFIG_KV_COOLDOWN_DURATION, "0".to_owned())?;
+    let cooldown = match str::parse(&cooldown) {
+        Ok(cd) => cd,
+        Err(_) => {
+            tracing::warn!("Invalid cooldown {} in database, defaulting to 0", cooldown);
+            database::set_kv(db_conn, CONFIG_KV_COOLDOWN_DURATION, "0")?;
+            0
+        }
+    };
+
+    let mut cooldown = chrono::Duration::milliseconds(cooldown);
 
     while let Some(msg) = rx.recv().await {
         use Command::*;
@@ -203,10 +268,57 @@ pub async fn run_commands<G: Gamepad>(
             msg
         };
 
+        if msg.privilege < Privilege::Operator
+            && matches!(anarchy_mode, AnarchyType::Democracy)
+            && !cooldown.is_zero()
+            && !database::test_and_set_cooldown_lapsed(db_conn, &msg.sender_id, &cooldown)?
+        {
+            reply_tx
+                .send(None)
+                .map_err(|_| anyhow!("Failed to reply to command"))?;
+            continue;
+        }
+
         match msg.command {
+            SetAnarchyMode(am) => {
+                if msg.privilege >= Privilege::Moderator {
+                    anarchy_mode = am;
+                    database::set_kv(db_conn, CONFIG_KV_ANARCHY_MODE, anarchy_mode.to_str())?;
+                    reply_tx
+                        .send(Some(format!("Set mode to {}", anarchy_mode.to_str())))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
+                } else {
+                    reply_tx
+                        .send(Some("You don't have permission to do that".to_string()))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
+                }
+            }
+            PrintAnarchyMode => {
+                reply_tx
+                    .send(Some(format!("Current mode is {}", anarchy_mode.to_str())))
+                    .map_err(|_| anyhow!("Failed to reply to command"))?;
+            }
+            SetCooldown(cd) => {
+                if msg.privilege >= Privilege::Moderator {
+                    database::set_kv(db_conn, CONFIG_KV_COOLDOWN_DURATION, cd.num_milliseconds())?;
+                    cooldown = cd;
+                    reply_tx
+                        .send(Some(format!("Set cooldown to {}", cooldown)))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
+                } else {
+                    reply_tx
+                        .send(Some("You don't have permission to do that".to_string()))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
+                }
+            }
             Movement(movement, duration) => {
-                if !database::is_blocked(db_conn, &msg.sender_id)
-                    .context("Failed to check for blocked user")?
+                reply_tx
+                    .send(None)
+                    .map_err(|_| anyhow!("Failed to reply to command"))?;
+
+                if matches!(anarchy_mode, AnarchyType::Anarchy)
+                    || !database::is_blocked(db_conn, &msg.sender_id)
+                        .context("Failed to check for blocked user")?
                 {
                     info!("Sending movement {:?}", msg.command);
                     gamepad.press(movement)?;
@@ -216,10 +328,6 @@ pub async fn run_commands<G: Gamepad>(
                 } else {
                     info!("Blocked movement from {}", msg.sender_name);
                 }
-
-                reply_tx
-                    .send(None)
-                    .map_err(|_| anyhow!("Failed to reply to command"))?;
             }
             AddOperator(user) => {
                 if msg.privilege >= Privilege::Moderator {
@@ -367,6 +475,8 @@ pub async fn run_commands<G: Gamepad>(
                     Unblock => "Usage: tp unblock <user>",
                     Game => "Usage: tp game <game-name>",
                     List => "Usage: tp list games | blocked | ops",
+                    SetCooldown => "Usage: tp cooldown <duration>",
+                    SetAnarchyMode => "Usage: tp mode <anarchy | democracy>"
                 };
 
                 reply_tx
@@ -395,12 +505,16 @@ pub async fn run_commands<G: Gamepad>(
                 let mut available_commands = Vec::new();
                 available_commands
                     .push("Move with standard controller buttons (up, down, a, b, tl, tr, etc.)");
+                if msg.privilege >= Privilege::Operator {
+                    available_commands.push("tp save/load - save or load state");
+                }
                 if msg.privilege >= Privilege::Moderator {
                     available_commands.push("tp block/unblock - block or unblock a user");
                     available_commands.push("tp op/deop - promote user to operator");
-                    available_commands.push("tp games - list games");
-                    available_commands.push("tp switch - switch game");
-                    available_commands.push("tp reset - reset console");
+                    available_commands.push("tp list - list games/ops/blocked users");
+                    available_commands.push("tp game/reset - switch/reset game");
+                    available_commands.push("tp mode - set anarchy mode");
+                    available_commands.push("tp cooldown - set command cooldown");
                 }
                 reply_tx
                     .send(Some(available_commands.join(", ")))
@@ -451,6 +565,34 @@ pub async fn run_commands<G: Gamepad>(
                     info!("{} loaded state", msg.sender_name);
                     reply_tx
                         .send(Some("Loaded game state".to_string()))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
+                } else {
+                    info!(
+                        "{} attempted to save state with insufficient privilege {:?}",
+                        msg.sender_name, msg.privilege
+                    );
+                    reply_tx
+                        .send(Some("You don't have permission to do that".to_string()))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
+                }
+            }
+            Reset => {
+                if msg.privilege >= Privilege::Operator {
+                    use crate::command::Movement;
+
+                    // FIXME: Make this more generic
+                    // Right now it's tied to a specific hotkey combo in retroarch
+                    gamepad.press(Movement::Mode)?;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    gamepad.press(Movement::C)?;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    gamepad.release(Movement::Mode)?;
+                    gamepad.release(Movement::C)?;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+
+                    info!("{} reset the system", msg.sender_name);
+                    reply_tx
+                        .send(Some("Reset current game".to_string()))
                         .map_err(|_| anyhow!("Failed to reply to command"))?;
                 } else {
                     info!(
@@ -663,9 +805,22 @@ mod parsing_test {
         "tp list",
         Some(Command::Partial(PartialCommand::List))
     );
+    test_command!(parse_malformed_mode, "tp mode invalidmode", Some(Command::Partial(PartialCommand::SetAnarchyMode)));
+    test_command!(parse_partial_cooldown, "tp cooldown", Some(Command::Partial(PartialCommand::SetCooldown)));
 
     test_command!(parse_save, "tp save", Some(Command::SaveState));
     test_command!(parse_load, "tp load", Some(Command::LoadState));
+    test_command!(parse_reset, "tp reset", Some(Command::Reset));
+
+    test_command!(parse_print_mode, "tp mode", Some(Command::PrintAnarchyMode));
+    test_command!(parse_anarchy, "tp mode anarchy", Some(Command::SetAnarchyMode(crate::command::AnarchyType::Anarchy)));
+    test_command!(parse_democracy, "tp mode democracy", Some(Command::SetAnarchyMode(crate::command::AnarchyType::Democracy)));
+
+    test_command!(parse_partial_game, "tp game", Some(Command::Partial(PartialCommand::Game)));
+    test_command!(parse_game, "tp game some_game", Some(Command::Game("some_game".to_string())));
+    test_command!(parse_stop, "tp stop", Some(Command::Stop));
+
+    test_command!(parse_cooldown, "tp cooldown 10s", Some(Command::SetCooldown(chrono::Duration::seconds(10))));
 
     #[test]
     fn parse_block_duration() {

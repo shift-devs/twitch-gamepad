@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use tokio::sync::mpsc::Sender;
 
 use crate::{
-    command::{self, Command, Message, Movement, Privilege},
+    command::{self, Command, Message, Movement, Privilege, AnarchyType},
     config::{Config, GameCommandString, GameName},
     database,
     game_runner::GameRunner,
@@ -231,6 +231,272 @@ async fn user_can_send_movements() {
     test.gamepad.expect_sequence(&[
         (Movement::A, ActionType::Press),
         (Movement::A, ActionType::Release),
+    ]);
+}
+
+#[tokio::test]
+async fn user_is_subject_to_cooldown() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_name = "user_name".to_owned();
+    let user_id = "user_id".to_owned();
+    let broadcaster_id = "broadcaster_id".to_owned();
+    let broadcaster_name = "broadcaster_name".to_owned();
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::SetCooldown(chrono::Duration::minutes(10)),
+                sender_id: broadcaster_id.clone(),
+                sender_name: broadcaster_name.clone(),
+                privilege: Privilege::Broadcaster,
+            },
+        )
+        .await;
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(command::Movement::A, 500),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Standard,
+            },
+        )
+        .await;
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(command::Movement::B, 500),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Standard,
+            },
+        )
+        .await;
+    });
+
+    test.run().await.unwrap();
+    join_handle.await.unwrap();
+    test.gamepad.expect_sequence(&[
+        (Movement::A, ActionType::Press),
+        (Movement::A, ActionType::Release),
+    ]);
+}
+
+#[tokio::test]
+async fn operator_is_not_subject_to_cooldown() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_name = "user_name".to_owned();
+    let user_id = "user_id".to_owned();
+    let broadcaster_id = "broadcaster_id".to_owned();
+    let broadcaster_name = "broadcaster_name".to_owned();
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::SetCooldown(chrono::Duration::minutes(10)),
+                sender_id: broadcaster_id.clone(),
+                sender_name: broadcaster_name.clone(),
+                privilege: Privilege::Broadcaster,
+            },
+        )
+        .await;
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(command::Movement::A, 500),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Operator,
+            },
+        )
+        .await;
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(command::Movement::B, 500),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Operator,
+            },
+        )
+        .await;
+    });
+
+    test.run().await.unwrap();
+    join_handle.await.unwrap();
+    test.gamepad.expect_sequence(&[
+        (Movement::A, ActionType::Press),
+        (Movement::A, ActionType::Release),
+        (Movement::B, ActionType::Press),
+        (Movement::B, ActionType::Release),
+    ]);
+}
+
+#[tokio::test]
+async fn user_cannot_set_cooldown() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_name = "user_name".to_owned();
+    let user_id = "user_id".to_owned();
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::SetCooldown(chrono::Duration::minutes(10)),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Standard,
+            },
+        )
+        .await;
+    });
+
+    test.run().await.unwrap();
+    join_handle.await.unwrap();
+
+    let cooldown: String = database::get_kv(&test.db_conn, "cooldown").unwrap().unwrap();
+    let cooldown = str::parse(&cooldown).unwrap();
+    let cooldown = chrono::Duration::milliseconds(cooldown);
+    assert!(cooldown.is_zero());
+    test.gamepad.expect_sequence(&[]);
+}
+
+#[tokio::test]
+async fn user_cannot_set_anarchy_mode() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_name = "user_name".to_owned();
+    let user_id = "user_id".to_owned();
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::SetAnarchyMode(command::AnarchyType::Anarchy),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Standard,
+            },
+        )
+        .await;
+    });
+
+    test.run().await.unwrap();
+    join_handle.await.unwrap();
+
+    let anarchy_mode: String = database::get_kv(&test.db_conn, "anarchy_mode").unwrap().unwrap();
+    assert_eq!(&anarchy_mode, command::AnarchyType::Democracy.to_str());
+    test.gamepad.expect_sequence(&[]);
+}
+
+#[tokio::test]
+async fn anarchy_mode_and_cooldown_restored_from_db() {
+    let (mut test, tx) = TestSetup::new();
+    database::set_kv(&test.db_conn, "anarchy_mode", AnarchyType::Anarchy.to_str().to_owned()).unwrap();
+    database::set_kv(&test.db_conn, "cooldown", "10000").unwrap();
+
+    let join_handle = tokio::task::spawn(async move {
+        std::mem::drop(tx);
+    });
+
+    test.run().await.unwrap();
+    join_handle.await.unwrap();
+
+    let anarchy_mode: String = database::get_kv(&test.db_conn, "anarchy_mode").unwrap().unwrap();
+    assert_eq!(&anarchy_mode, command::AnarchyType::Anarchy.to_str());
+
+    let cooldown: String = database::get_kv(&test.db_conn, "cooldown").unwrap().unwrap();
+    let cooldown: u64 = str::parse(&cooldown).unwrap();
+    assert_eq!(cooldown, 10000);
+
+    test.gamepad.expect_sequence(&[]);
+}
+
+#[tokio::test]
+async fn can_recover_from_malformed_cooldown_or_anarchy_mode_in_db() {
+    let (mut test, tx) = TestSetup::new();
+    database::set_kv(&test.db_conn, "anarchy_mode", "invalid").unwrap();
+    database::set_kv(&test.db_conn, "cooldown", "invalid").unwrap();
+
+    let join_handle = tokio::task::spawn(async move {
+        std::mem::drop(tx);
+    });
+
+    test.run().await.unwrap();
+    join_handle.await.unwrap();
+
+    let anarchy_mode: String = database::get_kv(&test.db_conn, "anarchy_mode").unwrap().unwrap();
+    assert_eq!(&anarchy_mode, command::AnarchyType::Democracy.to_str());
+
+    let cooldown: String = database::get_kv(&test.db_conn, "cooldown").unwrap().unwrap();
+    let cooldown: u64 = str::parse(&cooldown).unwrap();
+    assert_eq!(cooldown, 0);
+
+    test.gamepad.expect_sequence(&[]);
+}
+
+#[tokio::test]
+async fn blocks_and_cooldown_is_ignored_in_anarchy_mode() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_name = "user_name".to_owned();
+    let user_id = "user_id".to_owned();
+    let broadcaster_id = "broadcaster_id".to_owned();
+    let broadcaster_name = "broadcaster_name".to_owned();
+
+    database::update_user(&test.db_conn, &user_id, &user_name).unwrap();
+    database::block_user(&mut test.db_conn, &user_name, None).unwrap();
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::SetCooldown(chrono::Duration::minutes(10)),
+                sender_id: broadcaster_id.clone(),
+                sender_name: broadcaster_name.clone(),
+                privilege: Privilege::Broadcaster,
+            },
+        )
+        .await;
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::SetAnarchyMode(command::AnarchyType::Anarchy),
+                sender_id: broadcaster_id.clone(),
+                sender_name: broadcaster_name.clone(),
+                privilege: Privilege::Broadcaster,
+            },
+        )
+        .await;
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(command::Movement::A, 500),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Standard,
+            },
+        )
+        .await;
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(command::Movement::B, 500),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Standard,
+            },
+        )
+        .await;
+    });
+
+    test.run().await.unwrap();
+    join_handle.await.unwrap();
+    test.gamepad.expect_sequence(&[
+        (Movement::A, ActionType::Press),
+        (Movement::A, ActionType::Release),
+        (Movement::B, ActionType::Press),
+        (Movement::B, ActionType::Release),
     ]);
 }
 
@@ -848,6 +1114,64 @@ async fn user_cannot_load_state() {
             &mut tx,
             Message {
                 command: Command::LoadState,
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Standard,
+            },
+        )
+        .await;
+    });
+
+    test.run().await.unwrap();
+    join_handle.await.unwrap();
+    test.gamepad.expect_sequence(&[]);
+}
+
+#[tokio::test]
+async fn operator_can_reset_game() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_id = "user_id".to_owned();
+    let user_name = "user_name".to_owned();
+
+    database::update_user(&test.db_conn, &user_id, &user_name).unwrap();
+    database::op_user(&mut test.db_conn, &user_name).unwrap();
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Reset,
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Standard,
+            },
+        )
+        .await;
+    });
+
+    test.run().await.unwrap();
+    join_handle.await.unwrap();
+    test.gamepad.expect_sequence(&[
+        (Movement::Mode, ActionType::Press),
+        (Movement::C, ActionType::Press),
+        (Movement::Mode, ActionType::Release),
+        (Movement::C, ActionType::Release),
+    ]);
+}
+
+#[tokio::test]
+async fn user_cannot_reset_game() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_id = "user_id".to_owned();
+    let user_name = "user_name".to_owned();
+
+    database::update_user(&test.db_conn, &user_id, &user_name).unwrap();
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Reset,
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,

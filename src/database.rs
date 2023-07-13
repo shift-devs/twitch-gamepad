@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, ToSql, types::FromSql};
 use std::path::Path;
 
 #[cfg(test)]
@@ -6,6 +6,7 @@ pub fn clear_db(conn: &Connection) -> anyhow::Result<()> {
     conn.execute("delete from users", ())?;
     conn.execute("delete from operators", ())?;
     conn.execute("delete from blocked_users", ())?;
+    conn.execute("delete from last_command_time", ())?;
     Ok(())
 }
 
@@ -36,6 +37,24 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
         (),
     )?;
 
+    conn.execute(
+        "create table if not exists last_command_time (
+             id integer primary key,
+             twitch_id text not null unique references users(twitch_id),
+             time text not null
+         )",
+        (),
+    )?;
+
+    conn.execute(
+        "create table if not exists config_kv (
+             id integer primary key,
+             key text not null unique,
+             value text
+         )",
+        (),
+    )?;
+
     Ok(())
 }
 
@@ -52,12 +71,52 @@ pub fn connect<T: AsRef<Path>>(path: T) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
+pub fn set_kv<T: ToSql>(conn: &Connection, key: &str, value: T) -> rusqlite::Result<()> {
+    conn.execute("insert or replace into config_kv (key, value) values (?1, ?2)", params![key, value])?;
+    Ok(())
+}
+
+#[cfg(test)]
+pub fn get_kv<T: FromSql>(conn: &Connection, key: &str) -> rusqlite::Result<Option<T>> {
+    conn.query_row("select value from config_kv where key=?1", params![key], |row| row.get(0)).optional()
+}
+
+pub fn get_or_set_kv<T: ToSql + FromSql>(conn: &mut Connection, key: &str, default: T) -> rusqlite::Result<T> {
+    let tx = conn.transaction()?;
+    let query_val: Option<T> = tx.query_row("select value from config_kv where key=?1", params![key], |row| row.get(0)).optional()?;
+
+    match query_val {
+        Some(val) => Ok(val),
+        None => {
+            tx.execute("insert into config_kv (key, value) values (?1, ?2)", params![key, default])?;
+            tx.commit()?;
+            Ok(default)
+        }
+    }
+}
+
 pub fn update_user(conn: &Connection, id: &str, name: &str) -> rusqlite::Result<()> {
     conn.execute(
         "insert or replace into users(twitch_id, name) values (?1, ?2)",
         params![id, name],
     )?;
     Ok(())
+}
+
+pub fn test_and_set_cooldown_lapsed(conn: &mut Connection, id: &str, cooldown: &chrono::Duration) -> rusqlite::Result<bool> {
+    let tx = conn.transaction()?;
+    let last_command_time: Option<chrono::DateTime<chrono::Utc>> = tx.query_row("select time from last_command_time where twitch_id=?1", params![id], |row| row.get(0))
+        .optional()?;
+
+    let cooldown_lapsed = match last_command_time {
+        Some(last_command_time) => chrono::Utc::now() >= last_command_time + *cooldown,
+        None => true,
+    };
+
+    tx.execute("insert or replace into last_command_time (twitch_id, time) values (?1, ?2)", params![id, chrono::Utc::now()])?;
+    tx.commit()?;
+
+    Ok(cooldown_lapsed)
 }
 
 pub fn is_operator(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
