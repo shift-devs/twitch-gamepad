@@ -14,7 +14,7 @@ mod test;
 
 fn stdin_input(
     tx: tokio::sync::mpsc::Sender<command::WithReply<Message, Option<String>>>,
-) -> tokio::task::JoinHandle<()> {
+) -> tokio::task::JoinHandle<anyhow::Result<()>> {
     tokio::task::spawn(async move {
         let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
         let mut line = String::new();
@@ -34,7 +34,7 @@ fn stdin_input(
 
                 tracing::info!("Message: {:?}", msg);
                 let (msg, reply_rx) = command::WithReply::new(msg);
-                tx.send(msg).await.unwrap();
+                tx.send(msg).await?;
                 if let Ok(Some(reply)) = reply_rx.await {
                     tracing::info!("Reply: {:?}", reply);
                 }
@@ -42,6 +42,8 @@ fn stdin_input(
 
             line.clear();
         }
+
+        Ok(())
     })
 }
 
@@ -53,10 +55,10 @@ async fn main() {
     let channel = &config.twitch.channel_name;
 
     let db_path = cfg_dir.join("twitch_gamepad.db");
-    let mut db_conn = database::connect(&db_path).unwrap();
+    let db_conn = database::connect(&db_path).unwrap();
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel(100);
-    let (msg_join_handle, client_handle) = match &config.twitch.auth {
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (_, client_handle) = match &config.twitch.auth {
         config::TwitchAuth::Anonymous => {
             twitch::run_twitch_irc_anonymous(channel.clone(), tx.clone())
         }
@@ -96,25 +98,44 @@ async fn main() {
         }
     };
 
-    let stdin_join_handle = stdin_input(tx.clone());
+    stdin_input(tx.clone());
 
     let gamepad = gamepad::UinputGamepad::new().unwrap();
     client_handle.await.unwrap();
 
-    let (_gamepad_handle, gamepad_tx) = gamepad::run_gamepad(gamepad);
-    let (game_runner_handle, mut game_runner_tx) = game_runner::run_game_runner();
+    let (mut gamepad_handle, gamepad_tx) = gamepad::run_gamepad(gamepad);
+    let (mut game_runner_handle, game_runner_tx) = game_runner::run_game_runner();
 
-    command::run_commands(
-        &mut rx,
-        &config,
-        gamepad_tx,
-        &mut db_conn,
-        &mut game_runner_tx,
-    )
-    .await
-    .unwrap();
+    let command_runner: tokio::task::JoinHandle<anyhow::Result<()>> =
+        tokio::task::spawn(async move {
+            let mut rx = rx;
+            let config = config;
+            let mut db_conn = db_conn;
+            let mut game_runner_tx = game_runner_tx;
 
-    msg_join_handle.await.unwrap();
-    stdin_join_handle.await.unwrap();
-    game_runner_handle.await.unwrap();
+            command::run_commands(
+                &mut rx,
+                &config,
+                gamepad_tx,
+                &mut db_conn,
+                &mut game_runner_tx,
+            )
+            .await?;
+
+            Ok(())
+        });
+
+    tokio::select! {
+        cr = command_runner => {
+            cr.unwrap().unwrap();
+            let _ = tokio::join!(gamepad_handle, game_runner_handle);
+        }
+        gh = &mut gamepad_handle => {
+            gh.unwrap().unwrap();
+        }
+        grh = &mut game_runner_handle => grh.unwrap().unwrap(),
+    }
+
+    tracing::info!("Command runner finished");
+    std::process::exit(0);
 }

@@ -110,12 +110,15 @@ pub async fn gamepad_runner<G: Gamepad>(
 
 pub fn run_gamepad<G: Gamepad + Send + Sync + 'static>(
     mut gamepad: G,
-) -> (tokio::task::JoinHandle<G>, Sender<MovementPacket>) {
+) -> (
+    tokio::task::JoinHandle<anyhow::Result<G>>,
+    Sender<MovementPacket>,
+) {
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let jh = tokio::task::spawn(async move {
-        //let mut gamepad = gamepad;
-        gamepad_runner(&mut gamepad, rx).await.unwrap();
-        gamepad
+        gamepad_runner(&mut gamepad, rx).await?;
+        tracing::info!("Gamepad runner done");
+        Ok(gamepad)
     });
 
     (jh, tx)
