@@ -12,6 +12,7 @@ use tokio::sync::{
     oneshot,
 };
 use tracing::info;
+use strum_macros::EnumIter;
 
 const CONFIG_KV_ANARCHY_MODE: &str = "anarchy_mode";
 const CONFIG_KV_COOLDOWN_DURATION: &str = "cooldown";
@@ -70,7 +71,7 @@ impl<T, R> WithReply<T, R> {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, EnumIter)]
 #[non_exhaustive]
 pub enum Movement {
     A,
@@ -91,6 +92,13 @@ pub enum Movement {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MovementPacket {
+    pub movements: Vec<Movement>,
+    pub duration: u64,
+    pub stagger: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PartialCommand {
     AddOperator,
@@ -106,7 +114,7 @@ pub enum PartialCommand {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Command {
-    Movement(Movement, u32),
+    Movement(MovementPacket),
     AddOperator(String),
     RemoveOperator(String),
     Block(String, Option<chrono::DateTime<chrono::Utc>>),
@@ -127,38 +135,53 @@ pub enum Command {
 }
 
 fn parse_movement(tokens: &Vec<&str>) -> Option<Command> {
-    if tokens.is_empty() || tokens.len() > 2 {
+    fn parse_movement_token(token: &str) -> Option<Movement> {
+        let movement = match token {
+            "a" => Movement::A,
+            "b" => Movement::B,
+            "c" => Movement::C,
+            "x" => Movement::X,
+            "y" => Movement::Y,
+            "z" => Movement::Z,
+            "tl" | "lt" => Movement::TL,
+            "tr" | "rt" => Movement::TR,
+            "up" => Movement::Up,
+            "down" => Movement::Down,
+            "left" => Movement::Left,
+            "right" => Movement::Right,
+            "start" => Movement::Start,
+            "select" => Movement::Select,
+            //"mode" => Movement::Mode,
+            _ => return None,
+        };
+
+        Some(movement)
+    }
+
+    if tokens.is_empty() {
         return None;
     }
 
-    let movement = match tokens[0] {
-        "a" => Movement::A,
-        "b" => Movement::B,
-        "c" => Movement::C,
-        "x" => Movement::X,
-        "y" => Movement::Y,
-        "z" => Movement::Z,
-        "tl" => Movement::TL,
-        "tr" => Movement::TR,
-        "up" => Movement::Up,
-        "down" => Movement::Down,
-        "left" => Movement::Left,
-        "right" => Movement::Right,
-        "start" => Movement::Start,
-        "select" => Movement::Select,
-        //"mode" => Movement::Mode,
-        _ => return None,
-    };
-
-    let duration_ms = match tokens.get(1) {
-        Some(token) => str::parse::<u32>(token)
+    let mut movements = Vec::new();
+    let mut duration = Some(500);
+    for (idx, token) in tokens.iter().enumerate() {
+        if let Some(movement) = parse_movement_token(*token) {
+            movements.push(movement);
+        } else if idx == tokens.len() - 1 {
+            duration = str::parse::<u64>(token)
             .ok()
             .filter(|sec| *sec <= 5)
-            .map(|sec| sec * 1000),
-        None => Some(500),
-    };
+            .map(|sec| sec * 1000);
+        } else {
+            return None;
+        }
+    }
 
-    duration_ms.map(|duration_ms| Command::Movement(movement, duration_ms))
+    if movements.is_empty() {
+        return None;
+    }
+
+    duration.map(|duration| Command::Movement(MovementPacket { movements, duration, stagger: 0 }))
 }
 
 pub fn parse_command(input: &str) -> Option<Command> {
@@ -214,10 +237,10 @@ pub fn parse_command(input: &str) -> Option<Command> {
     }
 }
 
-pub async fn run_commands<G: Gamepad>(
+pub async fn run_commands(
     rx: &mut Receiver<WithReply<Message, Option<String>>>,
     config: &Config,
-    gamepad: &mut G,
+    gamepad_tx: Sender<MovementPacket>,
     db_conn: &mut Connection,
     game_runner_tx: &mut Sender<game_runner::GameRunner>,
 ) -> anyhow::Result<()> {
@@ -311,7 +334,7 @@ pub async fn run_commands<G: Gamepad>(
                         .map_err(|_| anyhow!("Failed to reply to command"))?;
                 }
             }
-            Movement(movement, duration) => {
+            Movement(packet) => {
                 reply_tx
                     .send(None)
                     .map_err(|_| anyhow!("Failed to reply to command"))?;
@@ -320,11 +343,8 @@ pub async fn run_commands<G: Gamepad>(
                     || !database::is_blocked(db_conn, &msg.sender_id)
                         .context("Failed to check for blocked user")?
                 {
-                    info!("Sending movement {:?}", msg.command);
-                    gamepad.press(movement)?;
-                    tokio::time::sleep(Duration::from_millis(duration as u64)).await;
-                    gamepad.release(movement)?;
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    info!("Sending movement {:?}", packet);
+                    gamepad_tx.send(packet).await?;
                 } else {
                     info!("Blocked movement from {}", msg.sender_name);
                 }
@@ -526,13 +546,8 @@ pub async fn run_commands<G: Gamepad>(
 
                     // FIXME: Make this more generic
                     // Right now it's tied to a specific hotkey combo in retroarch
-                    gamepad.press(Movement::Mode)?;
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    gamepad.press(Movement::A)?;
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    gamepad.release(Movement::Mode)?;
-                    gamepad.release(Movement::A)?;
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    let movements = vec![Movement::Mode, Movement::A];
+                    gamepad_tx.send(MovementPacket { movements, duration: 100, stagger: 100 }).await?;
 
                     info!("{} saved state", msg.sender_name);
                     reply_tx
@@ -554,13 +569,8 @@ pub async fn run_commands<G: Gamepad>(
 
                     // FIXME: Make this more generic
                     // Right now it's tied to a specific hotkey combo in retroarch
-                    gamepad.press(Movement::Mode)?;
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    gamepad.press(Movement::B)?;
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    gamepad.release(Movement::Mode)?;
-                    gamepad.release(Movement::B)?;
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    let movements = vec![Movement::Mode, Movement::B];
+                    gamepad_tx.send(MovementPacket { movements, duration: 100, stagger: 100 }).await?;
 
                     info!("{} loaded state", msg.sender_name);
                     reply_tx
@@ -582,13 +592,8 @@ pub async fn run_commands<G: Gamepad>(
 
                     // FIXME: Make this more generic
                     // Right now it's tied to a specific hotkey combo in retroarch
-                    gamepad.press(Movement::Mode)?;
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    gamepad.press(Movement::C)?;
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    gamepad.release(Movement::Mode)?;
-                    gamepad.release(Movement::C)?;
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    let movements = vec![Movement::Mode, Movement::C];
+                    gamepad_tx.send(MovementPacket { movements, duration: 100, stagger: 100 }).await?;
 
                     info!("{} reset the system", msg.sender_name);
                     reply_tx
@@ -623,85 +628,100 @@ mod parsing_test {
         };
     }
 
+    fn movement_packet(movements: &[Movement], duration: u64) -> Option<Command> {
+        let movements = Vec::from(movements);
+        Some(Command::Movement(super::MovementPacket { movements, duration, stagger: 0 }))
+    }
+
     test_command!(
-        parse_movement_sensitivity,
+        parse_movement_case_sensitivity,
         "A",
-        Some(Command::Movement(Movement::A, 500))
+        movement_packet(&[Movement::A], 500)
     );
     test_command!(
         parse_movement_a,
         "a",
-        Some(Command::Movement(Movement::A, 500))
+        movement_packet(&[Movement::A], 500)
     );
     test_command!(
         parse_movement_b,
         "b",
-        Some(Command::Movement(Movement::B, 500))
+        movement_packet(&[Movement::B], 500)
     );
     test_command!(
         parse_movement_c,
         "c",
-        Some(Command::Movement(Movement::C, 500))
+        movement_packet(&[Movement::C], 500)
     );
     test_command!(
         parse_movement_x,
         "x",
-        Some(Command::Movement(Movement::X, 500))
+        movement_packet(&[Movement::X], 500)
     );
     test_command!(
         parse_movement_y,
         "y",
-        Some(Command::Movement(Movement::Y, 500))
+        movement_packet(&[Movement::Y], 500)
     );
     test_command!(
         parse_movement_z,
         "z",
-        Some(Command::Movement(Movement::Z, 500))
+        movement_packet(&[Movement::Z], 500)
     );
     test_command!(
         parse_movement_tl,
         "tl",
-        Some(Command::Movement(Movement::TL, 500))
+        movement_packet(&[Movement::TL], 500)
     );
     test_command!(
         parse_movement_tr,
         "tr",
-        Some(Command::Movement(Movement::TR, 500))
+        movement_packet(&[Movement::TR], 500)
     );
     test_command!(
         parse_movement_start,
         "start",
-        Some(Command::Movement(Movement::Start, 500))
+        movement_packet(&[Movement::Start], 500)
     );
     test_command!(
         parse_movement_select,
         "select",
-        Some(Command::Movement(Movement::Select, 500))
+        movement_packet(&[Movement::Select], 500)
     );
     test_command!(
         parse_movement_up,
         "up",
-        Some(Command::Movement(Movement::Up, 500))
+        movement_packet(&[Movement::Up], 500)
     );
     test_command!(
         parse_movement_down,
         "down",
-        Some(Command::Movement(Movement::Down, 500))
+        movement_packet(&[Movement::Down], 500)
     );
     test_command!(
         parse_movement_left,
         "left",
-        Some(Command::Movement(Movement::Left, 500))
+        movement_packet(&[Movement::Left], 500)
     );
     test_command!(
         parse_movement_right,
         "right",
-        Some(Command::Movement(Movement::Right, 500))
+        movement_packet(&[Movement::Right], 500)
     );
     test_command!(
         parse_movement_duration,
         "a 2",
-        Some(Command::Movement(Movement::A, 2000))
+        movement_packet(&[Movement::A], 2000)
+    );
+    test_command!(
+        parse_movement_multiple_with_time,
+        "a b x y lt rt 1",
+        movement_packet(&[Movement::A, Movement::B, Movement::X, Movement::Y, Movement::TL, Movement::TR], 1000)
+    );
+    test_command!(
+        parse_movement_multiple,
+        "a b x y lt rt",
+        movement_packet(&[Movement::A, Movement::B, Movement::X, Movement::Y, Movement::TL, Movement::TR], 500)
     );
 
     test_command!(
@@ -767,12 +787,12 @@ mod parsing_test {
         None
     );
     test_command!(parse_movement_extraneous, "a 2 and something", None);
-    test_command!(parse_movement_invalid_time, "a b", None);
+    test_command!(parse_movement_invalid_time, "a invalid-time", None);
     test_command!(parse_movement_time_too_large, "a 100", None);
     test_command!(
         parse_twitch_deduplicated,
         "a \u{e0000}",
-        Some(Command::Movement(Movement::A, 500))
+        movement_packet(&[Movement::A], 500)
     );
     test_command!(
         parse_block_invalid_time,

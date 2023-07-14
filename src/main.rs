@@ -98,15 +98,16 @@ async fn main() {
 
     let stdin_join_handle = stdin_input(tx.clone());
 
-    let mut gamepad = gamepad::UinputGamepad::new().unwrap();
+    let gamepad = gamepad::UinputGamepad::new().unwrap();
     client_handle.await.unwrap();
 
+    let (gamepad_handle, gamepad_tx) = gamepad::run_gamepad(gamepad);
     let (game_runner_handle, mut game_runner_tx) = game_runner::run_game_runner();
 
     command::run_commands(
         &mut rx,
         &config,
-        &mut gamepad,
+        gamepad_tx,
         &mut db_conn,
         &mut game_runner_tx,
     )

@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
-use tokio::sync::mpsc::Sender;
+use tokio::{sync::mpsc::Sender, join};
 
 use crate::{
-    command::{self, Command, Message, Movement, Privilege, AnarchyType},
+    command::{self, Command, Message, Movement, Privilege, AnarchyType, MovementPacket},
     config::{Config, GameCommandString, GameName},
     database,
     game_runner::GameRunner,
@@ -100,15 +100,19 @@ impl TestSetup {
             runner_cmds
         });
 
-        command::run_commands(
+        let (gamepad_tx, gamepad_rx) = tokio::sync::mpsc::channel(50);
+        let gamepad_runner = crate::gamepad::gamepad_runner(&mut self.gamepad, gamepad_rx);
+
+        let command_runner = command::run_commands(
             &mut self.msg_rx,
             &config,
-            &mut self.gamepad,
+            gamepad_tx,
             &mut self.db_conn,
             &mut tx,
-        )
-        .await
-        .unwrap();
+        );
+        let (gamepad_runner, command_runner) = join!(gamepad_runner, command_runner);
+        gamepad_runner.unwrap();
+        command_runner.unwrap();
         std::mem::drop(tx);
 
         let mut runner_cmds = jh.await.unwrap();
@@ -126,6 +130,42 @@ async fn send_message(
     rx.await.unwrap()
 }
 
+fn single_movement(movement: Movement, duration: u64) -> Command {
+    let movements = vec![movement];
+    Command::Movement(MovementPacket { movements, duration, stagger: 0 })
+}
+
+#[tokio::test]
+async fn can_send_multiple_movements() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_name = "user_name".to_owned();
+    let user_id = "user_id".to_owned();
+
+    let join_handle = tokio::task::spawn(async move {
+        let movements = vec![Movement::A, Movement::B];
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(MovementPacket { movements, duration: 500, stagger: 0 }),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Broadcaster,
+            },
+        )
+        .await;
+    });
+
+    test.run().await.unwrap();
+    join_handle.await.unwrap();
+    test.gamepad.expect_sequence(&[
+        (Movement::A, ActionType::Press),
+        (Movement::B, ActionType::Press),
+        (Movement::A, ActionType::Release),
+        (Movement::B, ActionType::Release),
+    ]);
+}
+
+
 #[tokio::test]
 async fn broadcaster_can_send_movements() {
     let (mut test, mut tx) = TestSetup::new();
@@ -136,7 +176,7 @@ async fn broadcaster_can_send_movements() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::A, 500),
+                command: single_movement(command::Movement::A, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Broadcaster,
@@ -163,7 +203,7 @@ async fn moderator_can_send_movements() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::A, 500),
+                command: single_movement(command::Movement::A, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Moderator,
@@ -190,7 +230,7 @@ async fn operator_can_send_movements() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::A, 500),
+                command: single_movement(command::Movement::A, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Operator,
@@ -217,7 +257,7 @@ async fn user_can_send_movements() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::A, 500),
+                command: single_movement(command::Movement::A, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
@@ -256,7 +296,7 @@ async fn user_is_subject_to_cooldown() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::A, 500),
+                command: single_movement(command::Movement::A, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
@@ -266,7 +306,7 @@ async fn user_is_subject_to_cooldown() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::B, 500),
+                command: single_movement(command::Movement::B, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
@@ -305,7 +345,7 @@ async fn operator_is_not_subject_to_cooldown() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::A, 500),
+                command: single_movement(command::Movement::A, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Operator,
@@ -315,7 +355,7 @@ async fn operator_is_not_subject_to_cooldown() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::B, 500),
+                command: single_movement(command::Movement::B, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Operator,
@@ -471,7 +511,7 @@ async fn blocks_and_cooldown_is_ignored_in_anarchy_mode() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::A, 500),
+                command: single_movement(command::Movement::A, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
@@ -481,7 +521,7 @@ async fn blocks_and_cooldown_is_ignored_in_anarchy_mode() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::B, 500),
+                command: single_movement(command::Movement::B, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
@@ -512,7 +552,7 @@ async fn broadcaster_can_block_user_is_blocked() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::A, 500),
+                command: single_movement(command::Movement::A, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
@@ -534,7 +574,7 @@ async fn broadcaster_can_block_user_is_blocked() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::B, 500),
+                command: single_movement(command::Movement::B, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
@@ -564,7 +604,7 @@ async fn moderator_can_block_user_is_blocked() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::A, 500),
+                command: single_movement(command::Movement::A, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
@@ -586,7 +626,7 @@ async fn moderator_can_block_user_is_blocked() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::B, 500),
+                command: single_movement(command::Movement::B, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
@@ -616,7 +656,7 @@ async fn user_cannot_block_user_is_not_blocked() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::A, 500),
+                command: single_movement(command::Movement::A, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
@@ -638,7 +678,7 @@ async fn user_cannot_block_user_is_not_blocked() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::B, 500),
+                command: single_movement(command::Movement::B, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
@@ -670,7 +710,7 @@ async fn broadcaster_can_op_user() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::A, 500),
+                command: single_movement(command::Movement::A, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
@@ -711,7 +751,7 @@ async fn moderator_can_op_user() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::A, 500),
+                command: single_movement(command::Movement::A, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
@@ -752,7 +792,7 @@ async fn operator_cannot_op_user() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::A, 500),
+                command: single_movement(command::Movement::A, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
@@ -796,7 +836,7 @@ async fn user_can_be_unblocked() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::A, 500),
+                command: single_movement(command::Movement::A, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
@@ -818,7 +858,7 @@ async fn user_can_be_unblocked() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::B, 500),
+                command: single_movement(command::Movement::B, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
@@ -878,7 +918,7 @@ async fn user_is_unblocked_after_duration_lapses() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(command::Movement::A, 500),
+                command: single_movement(command::Movement::A, 500),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Standard,
