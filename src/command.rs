@@ -2,17 +2,16 @@ use crate::{
     config::{Config, GameName},
     database,
     game_runner::{self, GameRunner},
-    gamepad::Gamepad,
 };
 use anyhow::{anyhow, Context};
-use core::time::Duration;
+
 use rusqlite::Connection;
+use strum_macros::EnumIter;
 use tokio::sync::{
     mpsc::{Receiver, Sender},
     oneshot,
 };
 use tracing::info;
-use strum_macros::EnumIter;
 
 const CONFIG_KV_ANARCHY_MODE: &str = "anarchy_mode";
 const CONFIG_KV_COOLDOWN_DURATION: &str = "cooldown";
@@ -24,7 +23,7 @@ pub enum AnarchyType {
 }
 
 impl AnarchyType {
-    pub const fn to_str(&self) -> &str {
+    pub const fn to_str(self) -> &'static str {
         match self {
             Self::Anarchy => "anarchy",
             Self::Democracy => "democracy",
@@ -165,13 +164,13 @@ fn parse_movement(tokens: &Vec<&str>) -> Option<Command> {
     let mut movements = Vec::new();
     let mut duration = Some(500);
     for (idx, token) in tokens.iter().enumerate() {
-        if let Some(movement) = parse_movement_token(*token) {
+        if let Some(movement) = parse_movement_token(token) {
             movements.push(movement);
         } else if idx == tokens.len() - 1 {
             duration = str::parse::<u64>(token)
-            .ok()
-            .filter(|sec| *sec <= 5)
-            .map(|sec| sec * 1000);
+                .ok()
+                .filter(|sec| *sec <= 5)
+                .map(|sec| sec * 1000);
         } else {
             return None;
         }
@@ -181,7 +180,13 @@ fn parse_movement(tokens: &Vec<&str>) -> Option<Command> {
         return None;
     }
 
-    duration.map(|duration| Command::Movement(MovementPacket { movements, duration, stagger: 0 }))
+    duration.map(|duration| {
+        Command::Movement(MovementPacket {
+            movements,
+            duration,
+            stagger: 0,
+        })
+    })
 }
 
 pub fn parse_command(input: &str) -> Option<Command> {
@@ -231,7 +236,7 @@ pub fn parse_command(input: &str) -> Option<Command> {
         ["tp", "cooldown", cd] => duration_str::parse(cd)
             .ok()
             .and_then(|d| chrono::Duration::from_std(d).ok())
-            .map(|d| Command::SetCooldown(d))
+            .map(Command::SetCooldown)
             .or(Some(Command::Partial(PartialCommand::SetCooldown))),
         _ => None,
     }
@@ -246,17 +251,29 @@ pub async fn run_commands(
 ) -> anyhow::Result<()> {
     let game_commands = config.game_command_list();
 
-    let anarchy_mode = database::get_or_set_kv(db_conn, CONFIG_KV_ANARCHY_MODE, AnarchyType::Democracy.to_str().to_owned())?;
+    let anarchy_mode = database::get_or_set_kv(
+        db_conn,
+        CONFIG_KV_ANARCHY_MODE,
+        AnarchyType::Democracy.to_str().to_owned(),
+    )?;
     let mut anarchy_mode = match AnarchyType::from_str(&anarchy_mode) {
         Some(am) => am,
         None => {
-            tracing::warn!("Invalid anarchy_mode {} in database, defaulting to democracy", anarchy_mode);
-            database::set_kv(db_conn, CONFIG_KV_ANARCHY_MODE, AnarchyType::Democracy.to_str())?;
+            tracing::warn!(
+                "Invalid anarchy_mode {} in database, defaulting to democracy",
+                anarchy_mode
+            );
+            database::set_kv(
+                db_conn,
+                CONFIG_KV_ANARCHY_MODE,
+                AnarchyType::Democracy.to_str(),
+            )?;
             AnarchyType::Democracy
-        },
+        }
     };
 
-    let cooldown: String = database::get_or_set_kv(db_conn, CONFIG_KV_COOLDOWN_DURATION, "0".to_owned())?;
+    let cooldown: String =
+        database::get_or_set_kv(db_conn, CONFIG_KV_COOLDOWN_DURATION, "0".to_owned())?;
     let cooldown = match str::parse(&cooldown) {
         Ok(cd) => cd,
         Err(_) => {
@@ -496,7 +513,7 @@ pub async fn run_commands(
                     Game => "Usage: tp game <game-name>",
                     List => "Usage: tp list games | blocked | ops",
                     SetCooldown => "Usage: tp cooldown <duration>",
-                    SetAnarchyMode => "Usage: tp mode <anarchy | democracy>"
+                    SetAnarchyMode => "Usage: tp mode <anarchy | democracy>",
                 };
 
                 reply_tx
@@ -547,7 +564,13 @@ pub async fn run_commands(
                     // FIXME: Make this more generic
                     // Right now it's tied to a specific hotkey combo in retroarch
                     let movements = vec![Movement::Mode, Movement::A];
-                    gamepad_tx.send(MovementPacket { movements, duration: 100, stagger: 100 }).await?;
+                    gamepad_tx
+                        .send(MovementPacket {
+                            movements,
+                            duration: 100,
+                            stagger: 100,
+                        })
+                        .await?;
 
                     info!("{} saved state", msg.sender_name);
                     reply_tx
@@ -570,7 +593,13 @@ pub async fn run_commands(
                     // FIXME: Make this more generic
                     // Right now it's tied to a specific hotkey combo in retroarch
                     let movements = vec![Movement::Mode, Movement::B];
-                    gamepad_tx.send(MovementPacket { movements, duration: 100, stagger: 100 }).await?;
+                    gamepad_tx
+                        .send(MovementPacket {
+                            movements,
+                            duration: 100,
+                            stagger: 100,
+                        })
+                        .await?;
 
                     info!("{} loaded state", msg.sender_name);
                     reply_tx
@@ -592,8 +621,14 @@ pub async fn run_commands(
 
                     // FIXME: Make this more generic
                     // Right now it's tied to a specific hotkey combo in retroarch
-                    let movements = vec![Movement::Mode, Movement::C];
-                    gamepad_tx.send(MovementPacket { movements, duration: 100, stagger: 100 }).await?;
+                    let movements = vec![Movement::Mode, Movement::X];
+                    gamepad_tx
+                        .send(MovementPacket {
+                            movements,
+                            duration: 100,
+                            stagger: 100,
+                        })
+                        .await?;
 
                     info!("{} reset the system", msg.sender_name);
                     reply_tx
@@ -630,7 +665,11 @@ mod parsing_test {
 
     fn movement_packet(movements: &[Movement], duration: u64) -> Option<Command> {
         let movements = Vec::from(movements);
-        Some(Command::Movement(super::MovementPacket { movements, duration, stagger: 0 }))
+        Some(Command::Movement(super::MovementPacket {
+            movements,
+            duration,
+            stagger: 0,
+        }))
     }
 
     test_command!(
@@ -638,36 +677,12 @@ mod parsing_test {
         "A",
         movement_packet(&[Movement::A], 500)
     );
-    test_command!(
-        parse_movement_a,
-        "a",
-        movement_packet(&[Movement::A], 500)
-    );
-    test_command!(
-        parse_movement_b,
-        "b",
-        movement_packet(&[Movement::B], 500)
-    );
-    test_command!(
-        parse_movement_c,
-        "c",
-        movement_packet(&[Movement::C], 500)
-    );
-    test_command!(
-        parse_movement_x,
-        "x",
-        movement_packet(&[Movement::X], 500)
-    );
-    test_command!(
-        parse_movement_y,
-        "y",
-        movement_packet(&[Movement::Y], 500)
-    );
-    test_command!(
-        parse_movement_z,
-        "z",
-        movement_packet(&[Movement::Z], 500)
-    );
+    test_command!(parse_movement_a, "a", movement_packet(&[Movement::A], 500));
+    test_command!(parse_movement_b, "b", movement_packet(&[Movement::B], 500));
+    test_command!(parse_movement_c, "c", movement_packet(&[Movement::C], 500));
+    test_command!(parse_movement_x, "x", movement_packet(&[Movement::X], 500));
+    test_command!(parse_movement_y, "y", movement_packet(&[Movement::Y], 500));
+    test_command!(parse_movement_z, "z", movement_packet(&[Movement::Z], 500));
     test_command!(
         parse_movement_tl,
         "tl",
@@ -716,12 +731,32 @@ mod parsing_test {
     test_command!(
         parse_movement_multiple_with_time,
         "a b x y lt rt 1",
-        movement_packet(&[Movement::A, Movement::B, Movement::X, Movement::Y, Movement::TL, Movement::TR], 1000)
+        movement_packet(
+            &[
+                Movement::A,
+                Movement::B,
+                Movement::X,
+                Movement::Y,
+                Movement::TL,
+                Movement::TR
+            ],
+            1000
+        )
     );
     test_command!(
         parse_movement_multiple,
         "a b x y lt rt",
-        movement_packet(&[Movement::A, Movement::B, Movement::X, Movement::Y, Movement::TL, Movement::TR], 500)
+        movement_packet(
+            &[
+                Movement::A,
+                Movement::B,
+                Movement::X,
+                Movement::Y,
+                Movement::TL,
+                Movement::TR
+            ],
+            500
+        )
     );
 
     test_command!(
@@ -825,22 +860,54 @@ mod parsing_test {
         "tp list",
         Some(Command::Partial(PartialCommand::List))
     );
-    test_command!(parse_malformed_mode, "tp mode invalidmode", Some(Command::Partial(PartialCommand::SetAnarchyMode)));
-    test_command!(parse_partial_cooldown, "tp cooldown", Some(Command::Partial(PartialCommand::SetCooldown)));
+    test_command!(
+        parse_malformed_mode,
+        "tp mode invalidmode",
+        Some(Command::Partial(PartialCommand::SetAnarchyMode))
+    );
+    test_command!(
+        parse_partial_cooldown,
+        "tp cooldown",
+        Some(Command::Partial(PartialCommand::SetCooldown))
+    );
 
     test_command!(parse_save, "tp save", Some(Command::SaveState));
     test_command!(parse_load, "tp load", Some(Command::LoadState));
     test_command!(parse_reset, "tp reset", Some(Command::Reset));
 
     test_command!(parse_print_mode, "tp mode", Some(Command::PrintAnarchyMode));
-    test_command!(parse_anarchy, "tp mode anarchy", Some(Command::SetAnarchyMode(crate::command::AnarchyType::Anarchy)));
-    test_command!(parse_democracy, "tp mode democracy", Some(Command::SetAnarchyMode(crate::command::AnarchyType::Democracy)));
+    test_command!(
+        parse_anarchy,
+        "tp mode anarchy",
+        Some(Command::SetAnarchyMode(
+            crate::command::AnarchyType::Anarchy
+        ))
+    );
+    test_command!(
+        parse_democracy,
+        "tp mode democracy",
+        Some(Command::SetAnarchyMode(
+            crate::command::AnarchyType::Democracy
+        ))
+    );
 
-    test_command!(parse_partial_game, "tp game", Some(Command::Partial(PartialCommand::Game)));
-    test_command!(parse_game, "tp game some_game", Some(Command::Game("some_game".to_string())));
+    test_command!(
+        parse_partial_game,
+        "tp game",
+        Some(Command::Partial(PartialCommand::Game))
+    );
+    test_command!(
+        parse_game,
+        "tp game some_game",
+        Some(Command::Game("some_game".to_string()))
+    );
     test_command!(parse_stop, "tp stop", Some(Command::Stop));
 
-    test_command!(parse_cooldown, "tp cooldown 10s", Some(Command::SetCooldown(chrono::Duration::seconds(10))));
+    test_command!(
+        parse_cooldown,
+        "tp cooldown 10s",
+        Some(Command::SetCooldown(chrono::Duration::seconds(10)))
+    );
 
     #[test]
     fn parse_block_duration() {

@@ -1,9 +1,6 @@
-use tokio::{sync::mpsc::{Receiver, Sender}, select};
-
 use crate::command::{Movement, MovementPacket};
+use tokio::sync::mpsc::{Receiver, Sender};
 use uinput::event::{absolute, controller};
-use strum::IntoEnumIterator;
-use tracing::info;
 
 pub trait Gamepad {
     fn press(&mut self, movement: Movement) -> anyhow::Result<()>;
@@ -79,8 +76,16 @@ impl Gamepad for UinputGamepad {
     }
 }
 
-pub async fn gamepad_runner<G: Gamepad>(gamepad: &mut G, mut rx: Receiver<MovementPacket>) -> anyhow::Result<()> {
-    while let Some(MovementPacket { movements, duration, stagger }) = rx.recv().await {
+pub async fn gamepad_runner<G: Gamepad>(
+    gamepad: &mut G,
+    mut rx: Receiver<MovementPacket>,
+) -> anyhow::Result<()> {
+    while let Some(MovementPacket {
+        movements,
+        duration,
+        stagger,
+    }) = rx.recv().await
+    {
         for movement in movements.iter() {
             gamepad.press(*movement)?;
 
@@ -103,7 +108,9 @@ pub async fn gamepad_runner<G: Gamepad>(gamepad: &mut G, mut rx: Receiver<Moveme
     Ok(())
 }
 
-pub fn run_gamepad<G: Gamepad + Send + Sync + 'static>(mut gamepad: G) -> (tokio::task::JoinHandle<G>, Sender<MovementPacket>) {
+pub fn run_gamepad<G: Gamepad + Send + Sync + 'static>(
+    mut gamepad: G,
+) -> (tokio::task::JoinHandle<G>, Sender<MovementPacket>) {
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let jh = tokio::task::spawn(async move {
         //let mut gamepad = gamepad;

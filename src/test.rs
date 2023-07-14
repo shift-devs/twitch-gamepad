@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
-use tokio::{sync::mpsc::Sender, join};
+use tokio::{join, sync::mpsc::Sender};
 
 use crate::{
-    command::{self, Command, Message, Movement, Privilege, AnarchyType, MovementPacket},
+    command::{self, AnarchyType, Command, Message, Movement, MovementPacket, Privilege},
     config::{Config, GameCommandString, GameName},
     database,
     game_runner::GameRunner,
@@ -132,7 +132,11 @@ async fn send_message(
 
 fn single_movement(movement: Movement, duration: u64) -> Command {
     let movements = vec![movement];
-    Command::Movement(MovementPacket { movements, duration, stagger: 0 })
+    Command::Movement(MovementPacket {
+        movements,
+        duration,
+        stagger: 0,
+    })
 }
 
 #[tokio::test]
@@ -146,7 +150,11 @@ async fn can_send_multiple_movements() {
         send_message(
             &mut tx,
             Message {
-                command: Command::Movement(MovementPacket { movements, duration: 500, stagger: 0 }),
+                command: Command::Movement(MovementPacket {
+                    movements,
+                    duration: 500,
+                    stagger: 0,
+                }),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
                 privilege: Privilege::Broadcaster,
@@ -164,7 +172,6 @@ async fn can_send_multiple_movements() {
         (Movement::B, ActionType::Release),
     ]);
 }
-
 
 #[tokio::test]
 async fn broadcaster_can_send_movements() {
@@ -396,7 +403,9 @@ async fn user_cannot_set_cooldown() {
     test.run().await.unwrap();
     join_handle.await.unwrap();
 
-    let cooldown: String = database::get_kv(&test.db_conn, "cooldown").unwrap().unwrap();
+    let cooldown: String = database::get_kv(&test.db_conn, "cooldown")
+        .unwrap()
+        .unwrap();
     let cooldown = str::parse(&cooldown).unwrap();
     let cooldown = chrono::Duration::milliseconds(cooldown);
     assert!(cooldown.is_zero());
@@ -425,7 +434,9 @@ async fn user_cannot_set_anarchy_mode() {
     test.run().await.unwrap();
     join_handle.await.unwrap();
 
-    let anarchy_mode: String = database::get_kv(&test.db_conn, "anarchy_mode").unwrap().unwrap();
+    let anarchy_mode: String = database::get_kv(&test.db_conn, "anarchy_mode")
+        .unwrap()
+        .unwrap();
     assert_eq!(&anarchy_mode, command::AnarchyType::Democracy.to_str());
     test.gamepad.expect_sequence(&[]);
 }
@@ -433,7 +444,12 @@ async fn user_cannot_set_anarchy_mode() {
 #[tokio::test]
 async fn anarchy_mode_and_cooldown_restored_from_db() {
     let (mut test, tx) = TestSetup::new();
-    database::set_kv(&test.db_conn, "anarchy_mode", AnarchyType::Anarchy.to_str().to_owned()).unwrap();
+    database::set_kv(
+        &test.db_conn,
+        "anarchy_mode",
+        AnarchyType::Anarchy.to_str().to_owned(),
+    )
+    .unwrap();
     database::set_kv(&test.db_conn, "cooldown", "10000").unwrap();
 
     let join_handle = tokio::task::spawn(async move {
@@ -443,10 +459,14 @@ async fn anarchy_mode_and_cooldown_restored_from_db() {
     test.run().await.unwrap();
     join_handle.await.unwrap();
 
-    let anarchy_mode: String = database::get_kv(&test.db_conn, "anarchy_mode").unwrap().unwrap();
+    let anarchy_mode: String = database::get_kv(&test.db_conn, "anarchy_mode")
+        .unwrap()
+        .unwrap();
     assert_eq!(&anarchy_mode, command::AnarchyType::Anarchy.to_str());
 
-    let cooldown: String = database::get_kv(&test.db_conn, "cooldown").unwrap().unwrap();
+    let cooldown: String = database::get_kv(&test.db_conn, "cooldown")
+        .unwrap()
+        .unwrap();
     let cooldown: u64 = str::parse(&cooldown).unwrap();
     assert_eq!(cooldown, 10000);
 
@@ -466,10 +486,14 @@ async fn can_recover_from_malformed_cooldown_or_anarchy_mode_in_db() {
     test.run().await.unwrap();
     join_handle.await.unwrap();
 
-    let anarchy_mode: String = database::get_kv(&test.db_conn, "anarchy_mode").unwrap().unwrap();
+    let anarchy_mode: String = database::get_kv(&test.db_conn, "anarchy_mode")
+        .unwrap()
+        .unwrap();
     assert_eq!(&anarchy_mode, command::AnarchyType::Democracy.to_str());
 
-    let cooldown: String = database::get_kv(&test.db_conn, "cooldown").unwrap().unwrap();
+    let cooldown: String = database::get_kv(&test.db_conn, "cooldown")
+        .unwrap()
+        .unwrap();
     let cooldown: u64 = str::parse(&cooldown).unwrap();
     assert_eq!(cooldown, 0);
 
@@ -1193,9 +1217,9 @@ async fn operator_can_reset_game() {
     join_handle.await.unwrap();
     test.gamepad.expect_sequence(&[
         (Movement::Mode, ActionType::Press),
-        (Movement::C, ActionType::Press),
+        (Movement::X, ActionType::Press),
         (Movement::Mode, ActionType::Release),
-        (Movement::C, ActionType::Release),
+        (Movement::X, ActionType::Release),
     ]);
 }
 

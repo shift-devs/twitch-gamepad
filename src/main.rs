@@ -101,7 +101,7 @@ async fn main() {
     let gamepad = gamepad::UinputGamepad::new().unwrap();
     client_handle.await.unwrap();
 
-    let (gamepad_handle, gamepad_tx) = gamepad::run_gamepad(gamepad);
+    let (_gamepad_handle, gamepad_tx) = gamepad::run_gamepad(gamepad);
     let (game_runner_handle, mut game_runner_tx) = game_runner::run_game_runner();
 
     command::run_commands(
