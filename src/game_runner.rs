@@ -3,7 +3,7 @@ use nix::sys::signal::{kill, Signal};
 use tokio::process::Child;
 use tracing::info;
 
-use std::sync::atomic::{Ordering, AtomicI32};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,7 +24,10 @@ async fn wait_on_child(child: &mut Option<Child>) -> anyhow::Result<()> {
     }
 }
 
-async fn stop_child(child: &mut Option<Child>, child_pid_atomic: &Arc<AtomicI32>) -> anyhow::Result<()> {
+async fn stop_child(
+    child: &mut Option<Child>,
+    child_pid_atomic: &Arc<AtomicI32>,
+) -> anyhow::Result<()> {
     if let Some(child) = child {
         info!("Exiting current child");
         if let Some(pid) = child.id() {
@@ -44,7 +47,10 @@ async fn stop_child(child: &mut Option<Child>, child_pid_atomic: &Arc<AtomicI32>
     Ok(())
 }
 
-async fn game_runner_loop(mut rx: tokio::sync::mpsc::Receiver<GameRunner>, child_pid_atomic: Arc<AtomicI32>) -> anyhow::Result<()> {
+async fn game_runner_loop(
+    mut rx: tokio::sync::mpsc::Receiver<GameRunner>,
+    child_pid_atomic: Arc<AtomicI32>,
+) -> anyhow::Result<()> {
     let mut current_process: Option<tokio::process::Child> = None;
 
     loop {
