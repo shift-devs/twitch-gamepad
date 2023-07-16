@@ -4,7 +4,7 @@ use tokio::{join, sync::mpsc::Sender};
 
 use crate::{
     command::{self, AnarchyType, Command, Message, Movement, MovementPacket, Privilege},
-    config::{Config, GameCommandString, GameName},
+    config::{Config, GameCommandString, GameInfo, GameName},
     database,
     game_runner::GameRunner,
     gamepad::Gamepad,
@@ -80,7 +80,7 @@ impl TestSetup {
 
     async fn run_with_games(
         &mut self,
-        games: Option<BTreeMap<GameName, GameCommandString>>,
+        games: Option<BTreeMap<GameName, GameInfo>>,
     ) -> anyhow::Result<()> {
         let config = Config {
             twitch: crate::config::TwitchConfig {
@@ -1044,13 +1044,25 @@ async fn can_list_games() {
     let broadcaster_id = "broadcaster_id".to_owned();
     let broadcaster_name = "broadcaster_name".to_owned();
 
-    let mut games: BTreeMap<GameName, GameCommandString> = BTreeMap::new();
+    let mut games: BTreeMap<GameName, GameInfo> = BTreeMap::new();
 
     let name: GameName = "Game 1".to_owned();
-    games.insert(name, GameCommandString("cmdforgame1 --command".to_owned()));
+    games.insert(
+        name,
+        GameInfo {
+            command: GameCommandString("cmdforgame1 --command".to_owned()),
+            restricted_inputs: None,
+        },
+    );
 
     let name: GameName = "Game 2".to_owned();
-    games.insert(name, GameCommandString("cmdforgame2 --command".to_owned()));
+    games.insert(
+        name,
+        GameInfo {
+            command: GameCommandString("cmdforgame2 --command".to_owned()),
+            restricted_inputs: None,
+        },
+    );
 
     let join_handle = tokio::task::spawn(async move {
         let response = send_message(
@@ -1255,14 +1267,26 @@ async fn moderator_can_switch_games() {
     let user_id = "user_id".to_owned();
     let user_name = "user_name".to_owned();
 
-    let mut games: BTreeMap<GameName, GameCommandString> = BTreeMap::new();
+    let mut games: BTreeMap<GameName, GameInfo> = BTreeMap::new();
 
     let name: GameName = "Game 1".to_owned();
-    games.insert(name, GameCommandString("cmdforgame1 --command".to_owned()));
+    games.insert(
+        name,
+        GameInfo {
+            command: GameCommandString("cmdforgame1 --command".to_owned()),
+            restricted_inputs: None,
+        },
+    );
 
     let name: GameName = "Game 2".to_owned();
     let game2_cmd = GameCommandString("cmdforgame2 --command".to_owned());
-    games.insert(name, game2_cmd.clone());
+    games.insert(
+        name,
+        GameInfo {
+            command: game2_cmd.clone(),
+            restricted_inputs: None,
+        },
+    );
 
     let join_handle = tokio::task::spawn(async move {
         send_message(
@@ -1293,14 +1317,26 @@ async fn moderator_can_stop_gameplay() {
     let user_id = "user_id".to_owned();
     let user_name = "user_name".to_owned();
 
-    let mut games: BTreeMap<GameName, GameCommandString> = BTreeMap::new();
+    let mut games: BTreeMap<GameName, GameInfo> = BTreeMap::new();
 
     let name: GameName = "Game 1".to_owned();
-    games.insert(name, GameCommandString("cmdforgame1 --command".to_owned()));
+    games.insert(
+        name,
+        GameInfo {
+            command: GameCommandString("cmdforgame1 --command".to_owned()),
+            restricted_inputs: None,
+        },
+    );
 
     let name: GameName = "Game 2".to_owned();
     let game2_cmd = GameCommandString("cmdforgame2 --command".to_owned());
-    games.insert(name, game2_cmd.clone());
+    games.insert(
+        name,
+        GameInfo {
+            command: game2_cmd,
+            restricted_inputs: None,
+        },
+    );
 
     let join_handle = tokio::task::spawn(async move {
         send_message(
@@ -1328,14 +1364,26 @@ async fn user_cannot_switch_games() {
     let user_id = "user_id".to_owned();
     let user_name = "user_name".to_owned();
 
-    let mut games: BTreeMap<GameName, GameCommandString> = BTreeMap::new();
+    let mut games: BTreeMap<GameName, GameInfo> = BTreeMap::new();
 
     let name: GameName = "Game 1".to_owned();
-    games.insert(name, GameCommandString("cmdforgame1 --command".to_owned()));
+    games.insert(
+        name,
+        GameInfo {
+            command: GameCommandString("cmdforgame1 --command".to_owned()),
+            restricted_inputs: None,
+        },
+    );
 
     let name: GameName = "Game 2".to_owned();
     let game2_cmd = GameCommandString("cmdforgame2 --command".to_owned());
-    games.insert(name, game2_cmd.clone());
+    games.insert(
+        name,
+        GameInfo {
+            command: game2_cmd,
+            restricted_inputs: None,
+        },
+    );
 
     let join_handle = tokio::task::spawn(async move {
         send_message(
@@ -1362,14 +1410,26 @@ async fn user_cannot_stop_gameplay() {
     let user_id = "user_id".to_owned();
     let user_name = "user_name".to_owned();
 
-    let mut games: BTreeMap<GameName, GameCommandString> = BTreeMap::new();
+    let mut games: BTreeMap<GameName, GameInfo> = BTreeMap::new();
 
     let name: GameName = "Game 1".to_owned();
-    games.insert(name, GameCommandString("cmdforgame1 --command".to_owned()));
+    games.insert(
+        name,
+        GameInfo {
+            command: GameCommandString("cmdforgame1 --command".to_owned()),
+            restricted_inputs: None,
+        },
+    );
 
     let name: GameName = "Game 2".to_owned();
     let game2_cmd = GameCommandString("cmdforgame2 --command".to_owned());
-    games.insert(name, game2_cmd.clone());
+    games.insert(
+        name,
+        GameInfo {
+            command: game2_cmd,
+            restricted_inputs: None,
+        },
+    );
 
     let join_handle = tokio::task::spawn(async move {
         send_message(
@@ -1388,4 +1448,209 @@ async fn user_cannot_stop_gameplay() {
     join_handle.await.unwrap();
 
     assert_eq!(test.game_runner_cmds.len(), 0);
+}
+
+#[tokio::test]
+async fn restricted_inputs_are_blocked_in_normal_modes() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_id = "user_id".to_owned();
+    let user_name = "user_name".to_owned();
+
+    let mut games: BTreeMap<GameName, GameInfo> = BTreeMap::new();
+
+    let name: GameName = "Game 2".to_owned();
+    let game2_cmd = GameCommandString("cmdforgame2 --command".to_owned());
+    games.insert(
+        name,
+        GameInfo {
+            command: game2_cmd.clone(),
+            restricted_inputs: Some(vec!["start".to_owned()]),
+        },
+    );
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Game("Game 2".to_owned()),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Moderator,
+            },
+        )
+        .await;
+
+        let movements = vec![Movement::Start, Movement::B];
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(MovementPacket {
+                    movements,
+                    duration: 500,
+                    stagger: 0,
+                }),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Moderator,
+            },
+        )
+        .await;
+    });
+
+    test.run_with_games(Some(games)).await.unwrap();
+    join_handle.await.unwrap();
+
+    assert_eq!(test.game_runner_cmds.len(), 1);
+    assert_eq!(
+        test.game_runner_cmds[0],
+        GameRunner::SwitchTo(game2_cmd.to_command())
+    );
+    test.gamepad.expect_sequence(&[]);
+}
+
+#[tokio::test]
+async fn restricted_inputs_are_not_blocked_in_restricted_mode() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_id = "user_id".to_owned();
+    let user_name = "user_name".to_owned();
+
+    let op_id = "op_id".to_owned();
+    let op_name = "op_name".to_owned();
+
+    database::update_user(&test.db_conn, &op_id, &op_name).unwrap();
+    database::op_user(&mut test.db_conn, &op_name).unwrap();
+
+    let mut games: BTreeMap<GameName, GameInfo> = BTreeMap::new();
+
+    let name: GameName = "Game 2".to_owned();
+    let game2_cmd = GameCommandString("cmdforgame2 --command".to_owned());
+    games.insert(
+        name,
+        GameInfo {
+            command: game2_cmd.clone(),
+            restricted_inputs: Some(vec!["start".to_owned()]),
+        },
+    );
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Game("Game 2".to_owned()),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Moderator,
+            },
+        )
+        .await;
+
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::SetAnarchyMode(AnarchyType::Restricted),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Moderator,
+            },
+        )
+        .await;
+
+        let movements = vec![Movement::Start, Movement::B];
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(MovementPacket {
+                    movements,
+                    duration: 500,
+                    stagger: 0,
+                }),
+                sender_id: op_id.clone(),
+                sender_name: op_name.clone(),
+                privilege: Privilege::Standard,
+            },
+        )
+        .await;
+    });
+
+    test.run_with_games(Some(games)).await.unwrap();
+    join_handle.await.unwrap();
+
+    assert_eq!(test.game_runner_cmds.len(), 1);
+    assert_eq!(
+        test.game_runner_cmds[0],
+        GameRunner::SwitchTo(game2_cmd.to_command())
+    );
+    test.gamepad.expect_sequence(&[
+        (Movement::Start, ActionType::Press),
+        (Movement::B, ActionType::Press),
+        (Movement::Start, ActionType::Release),
+        (Movement::B, ActionType::Release),
+    ]);
+}
+
+#[tokio::test]
+async fn users_cannot_send_input_in_restricted_mode() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_id = "user_id".to_owned();
+    let user_name = "user_name".to_owned();
+
+    let mod_id = "mod_id".to_owned();
+    let mod_name = "mod_name".to_owned();
+
+    let mut games: BTreeMap<GameName, GameInfo> = BTreeMap::new();
+
+    let name: GameName = "Game 2".to_owned();
+    let game2_cmd = GameCommandString("cmdforgame2 --command".to_owned());
+    games.insert(
+        name,
+        GameInfo {
+            command: game2_cmd.clone(),
+            restricted_inputs: Some(vec!["start".to_owned()]),
+        },
+    );
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Game("Game 2".to_owned()),
+                sender_id: mod_id.clone(),
+                sender_name: mod_name.clone(),
+                privilege: Privilege::Moderator,
+            },
+        )
+        .await;
+
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::SetAnarchyMode(AnarchyType::Restricted),
+                sender_id: mod_id.clone(),
+                sender_name: mod_name.clone(),
+                privilege: Privilege::Moderator,
+            },
+        )
+        .await;
+
+        send_message(
+            &mut tx,
+            Message {
+                command: single_movement(Movement::A, 500),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Standard,
+            },
+        )
+        .await;
+    });
+
+    test.run_with_games(Some(games)).await.unwrap();
+    join_handle.await.unwrap();
+
+    assert_eq!(test.game_runner_cmds.len(), 1);
+    assert_eq!(
+        test.game_runner_cmds[0],
+        GameRunner::SwitchTo(game2_cmd.to_command())
+    );
+    test.gamepad.expect_sequence(&[]);
 }

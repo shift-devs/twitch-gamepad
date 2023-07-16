@@ -1,6 +1,11 @@
 use anyhow::anyhow;
 use serde::Deserialize;
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::PathBuf,
+};
+
+use crate::command::{parse_movement_token, Movement, MovementPacket};
 
 pub type GameName = String;
 
@@ -11,6 +16,12 @@ pub struct GameCommandString(pub String);
 pub struct GameCommand {
     pub command: String,
     pub args: Vec<String>,
+}
+
+#[derive(Clone)]
+pub struct ConstructedGameInfo {
+    pub command: GameCommand,
+    pub restricted_inputs: HashSet<Movement>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -31,9 +42,15 @@ pub struct TwitchConfig {
 }
 
 #[derive(Clone, Deserialize)]
+pub struct GameInfo {
+    pub command: GameCommandString,
+    pub restricted_inputs: Option<Vec<String>>,
+}
+
+#[derive(Clone, Deserialize)]
 pub struct Config {
     pub twitch: TwitchConfig,
-    pub games: Option<BTreeMap<GameName, GameCommandString>>,
+    pub games: Option<BTreeMap<GameName, GameInfo>>,
 }
 
 fn cfg_path() -> anyhow::Result<PathBuf> {
@@ -74,14 +91,44 @@ impl GameCommandString {
     }
 }
 
+impl ConstructedGameInfo {
+    pub fn is_movement_restricted(&self, packet: &MovementPacket) -> bool {
+        for movement in packet.movements.iter() {
+            if self.restricted_inputs.contains(movement) {
+                return true;
+            }
+        }
+
+        false
+    }
+}
+
 impl Config {
-    pub fn game_command_list(&self) -> BTreeMap<GameName, GameCommand> {
+    pub fn game_command_list(&self) -> BTreeMap<GameName, ConstructedGameInfo> {
         self.games
             .as_ref()
             .map(|games| {
                 games
                     .iter()
-                    .map(|(name, cmd)| (name.to_owned(), cmd.to_command()))
+                    .map(|(name, gi)| {
+                        let mut ri = HashSet::new();
+                        if let Some(ref restricted_inputs) = gi.restricted_inputs {
+                            for m in restricted_inputs.iter() {
+                                let m = m.to_lowercase();
+                                let m =
+                                    parse_movement_token(&m).expect("invalid restricted movement");
+                                ri.insert(m);
+                            }
+                        }
+
+                        (
+                            name.to_owned(),
+                            ConstructedGameInfo {
+                                command: gi.command.to_command(),
+                                restricted_inputs: ri,
+                            },
+                        )
+                    })
                     .collect()
             })
             .unwrap_or_default()

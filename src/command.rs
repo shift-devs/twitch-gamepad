@@ -1,5 +1,5 @@
 use crate::{
-    config::{Config, GameName},
+    config::{Config, ConstructedGameInfo, GameName},
     database,
     game_runner::{self, GameRunner},
 };
@@ -20,6 +20,7 @@ const CONFIG_KV_COOLDOWN_DURATION: &str = "cooldown";
 pub enum AnarchyType {
     Anarchy,
     Democracy,
+    Restricted,
 }
 
 impl AnarchyType {
@@ -27,6 +28,7 @@ impl AnarchyType {
         match self {
             Self::Anarchy => "anarchy",
             Self::Democracy => "democracy",
+            Self::Restricted => "restricted",
         }
     }
 
@@ -34,6 +36,7 @@ impl AnarchyType {
         match s {
             "anarchy" => Some(Self::Anarchy),
             "democracy" => Some(Self::Democracy),
+            "restricted" => Some(Self::Restricted),
             _ => None,
         }
     }
@@ -70,7 +73,7 @@ impl<T, R> WithReply<T, R> {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, EnumIter)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, EnumIter)]
 #[non_exhaustive]
 pub enum Movement {
     A,
@@ -133,30 +136,30 @@ pub enum Command {
     PrintAnarchyMode,
 }
 
+pub fn parse_movement_token(token: &str) -> Option<Movement> {
+    let movement = match token {
+        "a" => Movement::A,
+        "b" => Movement::B,
+        "c" => Movement::C,
+        "x" => Movement::X,
+        "y" => Movement::Y,
+        "z" => Movement::Z,
+        "tl" | "lt" | "lb" => Movement::TL,
+        "tr" | "rt" | "rb" => Movement::TR,
+        "up" => Movement::Up,
+        "down" => Movement::Down,
+        "left" => Movement::Left,
+        "right" => Movement::Right,
+        "start" => Movement::Start,
+        "select" => Movement::Select,
+        //"mode" => Movement::Mode,
+        _ => return None,
+    };
+
+    Some(movement)
+}
+
 fn parse_movement(tokens: &Vec<&str>) -> Option<Command> {
-    fn parse_movement_token(token: &str) -> Option<Movement> {
-        let movement = match token {
-            "a" => Movement::A,
-            "b" => Movement::B,
-            "c" => Movement::C,
-            "x" => Movement::X,
-            "y" => Movement::Y,
-            "z" => Movement::Z,
-            "tl" | "lt" => Movement::TL,
-            "tr" | "rt" => Movement::TR,
-            "up" => Movement::Up,
-            "down" => Movement::Down,
-            "left" => Movement::Left,
-            "right" => Movement::Right,
-            "start" => Movement::Start,
-            "select" => Movement::Select,
-            //"mode" => Movement::Mode,
-            _ => return None,
-        };
-
-        Some(movement)
-    }
-
     if tokens.is_empty() {
         return None;
     }
@@ -231,6 +234,7 @@ pub fn parse_command(input: &str) -> Option<Command> {
         ["tp", "mode"] => Some(Command::PrintAnarchyMode),
         ["tp", "mode", "anarchy"] => Some(Command::SetAnarchyMode(AnarchyType::Anarchy)),
         ["tp", "mode", "democracy"] => Some(Command::SetAnarchyMode(AnarchyType::Democracy)),
+        ["tp", "mode", "restricted"] => Some(Command::SetAnarchyMode(AnarchyType::Restricted)),
         ["tp", "mode", _] => Some(Command::Partial(PartialCommand::SetAnarchyMode)),
         ["tp", "cooldown"] => Some(Command::Partial(PartialCommand::SetCooldown)),
         ["tp", "cooldown", cd] => duration_str::parse(cd)
@@ -250,6 +254,7 @@ pub async fn run_commands(
     game_runner_tx: &mut Sender<game_runner::GameRunner>,
 ) -> anyhow::Result<()> {
     let game_commands = config.game_command_list();
+    let mut current_game: Option<&ConstructedGameInfo> = None;
 
     let anarchy_mode = database::get_or_set_kv(
         db_conn,
@@ -308,6 +313,13 @@ pub async fn run_commands(
             msg
         };
 
+        if msg.privilege < Privilege::Operator && matches!(anarchy_mode, AnarchyType::Restricted) {
+            reply_tx
+                .send(None)
+                .map_err(|_| anyhow!("Failed to reply to command"))?;
+            continue;
+        }
+
         if msg.privilege < Privilege::Operator
             && matches!(anarchy_mode, AnarchyType::Democracy)
             && !cooldown.is_zero()
@@ -343,7 +355,10 @@ pub async fn run_commands(
                     database::set_kv(db_conn, CONFIG_KV_COOLDOWN_DURATION, cd.num_milliseconds())?;
                     cooldown = cd;
                     reply_tx
-                        .send(Some(format!("Set cooldown to {} seconds", cooldown.num_seconds())))
+                        .send(Some(format!(
+                            "Set cooldown to {} seconds",
+                            cooldown.num_seconds()
+                        )))
                         .map_err(|_| anyhow!("Failed to reply to command"))?;
                 } else {
                     reply_tx
@@ -355,6 +370,13 @@ pub async fn run_commands(
                 reply_tx
                     .send(None)
                     .map_err(|_| anyhow!("Failed to reply to command"))?;
+
+                if !matches!(anarchy_mode, AnarchyType::Restricted)
+                    && current_game.is_some_and(|game| game.is_movement_restricted(&packet))
+                {
+                    info!("Packet contains restricted movement {:?}", packet);
+                    continue;
+                }
 
                 if matches!(anarchy_mode, AnarchyType::Anarchy)
                     || !database::is_blocked(db_conn, &msg.sender_id)
@@ -415,6 +437,7 @@ pub async fn run_commands(
                             "Blocked {} {}",
                             user,
                             if let Some(duration) = duration {
+                                // FIXME: Eastern
                                 format!("until {}", duration)
                             } else {
                                 "forever".to_owned()
@@ -460,9 +483,10 @@ pub async fn run_commands(
             }
             Game(game) => {
                 if msg.privilege >= Privilege::Moderator {
-                    if let Some(game_command) = game_commands.get(&game) {
+                    if let Some(game_info) = game_commands.get(&game) {
+                        current_game = Some(game_info);
                         game_runner_tx
-                            .send(GameRunner::SwitchTo(game_command.clone()))
+                            .send(GameRunner::SwitchTo(game_info.command.clone()))
                             .await?;
                         reply_tx
                             .send(None)
@@ -488,6 +512,7 @@ pub async fn run_commands(
             }
             Stop => {
                 if msg.privilege >= Privilege::Moderator {
+                    current_game = None;
                     game_runner_tx.send(GameRunner::Stop).await?;
                     reply_tx
                         .send(None)
@@ -889,6 +914,13 @@ mod parsing_test {
         "tp mode democracy",
         Some(Command::SetAnarchyMode(
             crate::command::AnarchyType::Democracy
+        ))
+    );
+    test_command!(
+        parse_restricted,
+        "tp mode restricted",
+        Some(Command::SetAnarchyMode(
+            crate::command::AnarchyType::Restricted
         ))
     );
 
