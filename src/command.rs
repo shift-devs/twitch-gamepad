@@ -162,7 +162,7 @@ fn parse_movement(tokens: &Vec<&str>) -> Option<Command> {
     }
 
     let mut movements = Vec::new();
-    let mut duration = Some(500);
+    let mut duration = Some(100);
     for (idx, token) in tokens.iter().enumerate() {
         if let Some(movement) = parse_movement_token(token) {
             movements.push(movement);
@@ -343,7 +343,7 @@ pub async fn run_commands(
                     database::set_kv(db_conn, CONFIG_KV_COOLDOWN_DURATION, cd.num_milliseconds())?;
                     cooldown = cd;
                     reply_tx
-                        .send(Some(format!("Set cooldown to {}", cooldown)))
+                        .send(Some(format!("Set cooldown to {} seconds", cooldown.num_seconds())))
                         .map_err(|_| anyhow!("Failed to reply to command"))?;
                 } else {
                     reply_tx
@@ -544,12 +544,13 @@ pub async fn run_commands(
                     .push("Move with standard controller buttons (up, down, a, b, tl, tr, etc.)");
                 if msg.privilege >= Privilege::Operator {
                     available_commands.push("tp save/load - save or load state");
+                    available_commands.push("tp reset - reset game");
                 }
                 if msg.privilege >= Privilege::Moderator {
                     available_commands.push("tp block/unblock - block or unblock a user");
                     available_commands.push("tp op/deop - promote user to operator");
                     available_commands.push("tp list - list games/ops/blocked users");
-                    available_commands.push("tp game/reset - switch/reset game");
+                    available_commands.push("tp game - switch game");
                     available_commands.push("tp mode - set anarchy mode");
                     available_commands.push("tp cooldown - set command cooldown");
                 }
@@ -675,53 +676,53 @@ mod parsing_test {
     test_command!(
         parse_movement_case_sensitivity,
         "A",
-        movement_packet(&[Movement::A], 500)
+        movement_packet(&[Movement::A], 100)
     );
-    test_command!(parse_movement_a, "a", movement_packet(&[Movement::A], 500));
-    test_command!(parse_movement_b, "b", movement_packet(&[Movement::B], 500));
-    test_command!(parse_movement_c, "c", movement_packet(&[Movement::C], 500));
-    test_command!(parse_movement_x, "x", movement_packet(&[Movement::X], 500));
-    test_command!(parse_movement_y, "y", movement_packet(&[Movement::Y], 500));
-    test_command!(parse_movement_z, "z", movement_packet(&[Movement::Z], 500));
+    test_command!(parse_movement_a, "a", movement_packet(&[Movement::A], 100));
+    test_command!(parse_movement_b, "b", movement_packet(&[Movement::B], 100));
+    test_command!(parse_movement_c, "c", movement_packet(&[Movement::C], 100));
+    test_command!(parse_movement_x, "x", movement_packet(&[Movement::X], 100));
+    test_command!(parse_movement_y, "y", movement_packet(&[Movement::Y], 100));
+    test_command!(parse_movement_z, "z", movement_packet(&[Movement::Z], 100));
     test_command!(
         parse_movement_tl,
         "tl",
-        movement_packet(&[Movement::TL], 500)
+        movement_packet(&[Movement::TL], 100)
     );
     test_command!(
         parse_movement_tr,
         "tr",
-        movement_packet(&[Movement::TR], 500)
+        movement_packet(&[Movement::TR], 100)
     );
     test_command!(
         parse_movement_start,
         "start",
-        movement_packet(&[Movement::Start], 500)
+        movement_packet(&[Movement::Start], 100)
     );
     test_command!(
         parse_movement_select,
         "select",
-        movement_packet(&[Movement::Select], 500)
+        movement_packet(&[Movement::Select], 100)
     );
     test_command!(
         parse_movement_up,
         "up",
-        movement_packet(&[Movement::Up], 500)
+        movement_packet(&[Movement::Up], 100)
     );
     test_command!(
         parse_movement_down,
         "down",
-        movement_packet(&[Movement::Down], 500)
+        movement_packet(&[Movement::Down], 100)
     );
     test_command!(
         parse_movement_left,
         "left",
-        movement_packet(&[Movement::Left], 500)
+        movement_packet(&[Movement::Left], 100)
     );
     test_command!(
         parse_movement_right,
         "right",
-        movement_packet(&[Movement::Right], 500)
+        movement_packet(&[Movement::Right], 100)
     );
     test_command!(
         parse_movement_duration,
@@ -755,7 +756,7 @@ mod parsing_test {
                 Movement::TL,
                 Movement::TR
             ],
-            500
+            100
         )
     );
 
@@ -827,7 +828,7 @@ mod parsing_test {
     test_command!(
         parse_twitch_deduplicated,
         "a \u{e0000}",
-        movement_packet(&[Movement::A], 500)
+        movement_packet(&[Movement::A], 100)
     );
     test_command!(
         parse_block_invalid_time,
