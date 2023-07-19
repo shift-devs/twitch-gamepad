@@ -146,10 +146,10 @@ pub fn parse_movement_token(token: &str) -> Option<Movement> {
         "z" => Movement::Z,
         "tl" | "lt" | "lb" => Movement::TL,
         "tr" | "rt" | "rb" => Movement::TR,
-        "up" => Movement::Up,
-        "down" => Movement::Down,
-        "left" => Movement::Left,
-        "right" => Movement::Right,
+        "up" | "u" => Movement::Up,
+        "down" | "d" => Movement::Down,
+        "left" | "l" => Movement::Left,
+        "right" | "r" => Movement::Right,
         "start" => Movement::Start,
         "select" => Movement::Select,
         //"mode" => Movement::Mode,
@@ -747,6 +747,26 @@ mod parsing_test {
     test_command!(
         parse_movement_right,
         "right",
+        movement_packet(&[Movement::Right], 100)
+    );
+    test_command!(
+        parse_movement_up_single,
+        "u",
+        movement_packet(&[Movement::Up], 100)
+    );
+    test_command!(
+        parse_movement_down_single,
+        "d",
+        movement_packet(&[Movement::Down], 100)
+    );
+    test_command!(
+        parse_movement_left_single,
+        "l",
+        movement_packet(&[Movement::Left], 100)
+    );
+    test_command!(
+        parse_movement_right_single,
+        "r",
         movement_packet(&[Movement::Right], 100)
     );
     test_command!(
