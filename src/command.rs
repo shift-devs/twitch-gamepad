@@ -218,8 +218,8 @@ pub fn parse_command(input: &str) -> Option<Command> {
         ["tp", "deop", target] => Some(Command::RemoveOperator(target.to_string())),
         ["tp", "games"] => Some(Command::ListGames),
         ["tp", "game" | "switch" | "start"] => Some(Command::Partial(PartialCommand::Game)),
-        ["tp", "game" | "switch" | "start", game] => {
-            let game: GameName = game.to_string();
+        ["tp", "game" | "switch" | "start", game @ ..] => {
+            let game: GameName = game.join(" ");
             Some(Command::Game(game))
         }
         ["tp", "stop"] => Some(Command::Stop),
@@ -933,6 +933,11 @@ mod parsing_test {
         parse_game,
         "tp game some_game",
         Some(Command::Game("some_game".to_string()))
+    );
+    test_command!(
+        parse_game_with_space,
+        "tp game game with spaces",
+        Some(Command::Game("game with spaces".to_string()))
     );
     test_command!(parse_stop, "tp stop", Some(Command::Stop));
 
