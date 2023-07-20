@@ -136,6 +136,9 @@ fn single_movement(movement: Movement, duration: u64) -> Command {
         movements,
         duration,
         stagger: 0,
+
+        // Don't allow interruption so tests are deterministic
+        interruptible: false,
     })
 }
 
@@ -154,6 +157,7 @@ async fn can_send_multiple_movements() {
                     movements,
                     duration: 500,
                     stagger: 0,
+                    interruptible: false,
                 }),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
@@ -1488,6 +1492,7 @@ async fn restricted_inputs_are_blocked_in_normal_modes() {
                     movements,
                     duration: 500,
                     stagger: 0,
+                    interruptible: false,
                 }),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
@@ -1563,6 +1568,7 @@ async fn restricted_inputs_are_not_blocked_in_restricted_mode() {
                     movements,
                     duration: 500,
                     stagger: 0,
+                    interruptible: false,
                 }),
                 sender_id: op_id.clone(),
                 sender_name: op_name.clone(),
@@ -1653,4 +1659,132 @@ async fn users_cannot_send_input_in_restricted_mode() {
         GameRunner::SwitchTo(game2_cmd.to_command())
     );
     test.gamepad.expect_sequence(&[]);
+}
+
+#[tokio::test]
+async fn can_interrupt_movements() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_name = "user_name".to_owned();
+    let user_id = "user_id".to_owned();
+
+    let join_handle = tokio::task::spawn(async move {
+        let movements = vec![Movement::A, Movement::B];
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(MovementPacket {
+                    movements,
+
+                    // Set a duration >= 1 minute
+                    // We shouldn't execute the whole thing
+                    duration: 1000 * 60 * 2,
+                    stagger: 0,
+                    interruptible: true,
+                }),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Broadcaster,
+            },
+        )
+        .await;
+
+        let movements = vec![Movement::Start];
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(MovementPacket {
+                    movements,
+                    duration: 500,
+                    stagger: 0,
+                    interruptible: true,
+                }),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Broadcaster,
+            },
+        )
+        .await;
+    });
+
+    let start_time = std::time::Instant::now();
+    test.run().await.unwrap();
+    join_handle.await.unwrap();
+    let end_time = std::time::Instant::now();
+    let duration = chrono::Duration::from_std(start_time - end_time).unwrap();
+    assert!(duration.num_minutes() < 1);
+
+    test.gamepad.expect_sequence(&[
+        (Movement::A, ActionType::Press),
+        (Movement::B, ActionType::Press),
+        (Movement::A, ActionType::Release),
+        (Movement::B, ActionType::Release),
+        (Movement::Start, ActionType::Press),
+        (Movement::Start, ActionType::Release),
+    ]);
+}
+
+#[tokio::test]
+async fn saving_cannot_be_interrupted() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_name = "user_name".to_owned();
+    let user_id = "user_id".to_owned();
+
+    let join_handle = tokio::task::spawn(async move {
+        let movements = vec![Movement::Select];
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(MovementPacket {
+                    movements,
+                    duration: 500,
+                    stagger: 0,
+                    interruptible: true,
+                }),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Broadcaster,
+            },
+        )
+        .await;
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::SaveState,
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Broadcaster,
+            },
+        )
+        .await;
+
+        let movements = vec![Movement::Start];
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(MovementPacket {
+                    movements,
+                    duration: 500,
+                    stagger: 0,
+                    interruptible: true,
+                }),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Broadcaster,
+            },
+        )
+        .await;
+    });
+
+    test.run().await.unwrap();
+    join_handle.await.unwrap();
+    test.gamepad.expect_sequence(&[
+        (Movement::Select, ActionType::Press),
+        (Movement::Select, ActionType::Release),
+        (Movement::Mode, ActionType::Press),
+        (Movement::A, ActionType::Press),
+        (Movement::Mode, ActionType::Release),
+        (Movement::A, ActionType::Release),
+        (Movement::Start, ActionType::Press),
+        (Movement::Start, ActionType::Release),
+    ]);
 }

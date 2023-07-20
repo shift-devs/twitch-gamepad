@@ -98,6 +98,7 @@ pub struct MovementPacket {
     pub movements: Vec<Movement>,
     pub duration: u64,
     pub stagger: u64,
+    pub interruptible: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -188,6 +189,7 @@ fn parse_movement(tokens: &Vec<&str>) -> Option<Command> {
             movements,
             duration,
             stagger: 0,
+            interruptible: true,
         })
     })
 }
@@ -595,6 +597,7 @@ pub async fn run_commands(
                             movements,
                             duration: 100,
                             stagger: 100,
+                            interruptible: false,
                         })
                         .await?;
 
@@ -624,6 +627,7 @@ pub async fn run_commands(
                             movements,
                             duration: 100,
                             stagger: 100,
+                            interruptible: false,
                         })
                         .await?;
 
@@ -653,6 +657,7 @@ pub async fn run_commands(
                             movements,
                             duration: 100,
                             stagger: 100,
+                            interruptible: false,
                         })
                         .await?;
 
@@ -695,6 +700,7 @@ mod parsing_test {
             movements,
             duration,
             stagger: 0,
+            interruptible: true,
         }))
     }
 

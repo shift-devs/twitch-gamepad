@@ -1,5 +1,8 @@
+use std::future::Future;
+use std::sync::Arc;
+
 use crate::command::{Movement, MovementPacket};
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::{sync::mpsc::{Receiver, Sender}, select};
 use uinput::event::{absolute, controller};
 
 pub trait Gamepad {
@@ -76,36 +79,83 @@ impl Gamepad for UinputGamepad {
     }
 }
 
-pub async fn gamepad_runner<G: Gamepad>(
-    gamepad: &mut G,
-    mut rx: Receiver<MovementPacket>,
+async fn gamepad_movement<G: Gamepad>(
+    gamepad: Arc<tokio::sync::Mutex<&mut G>>,
+    packet: MovementPacket,
 ) -> anyhow::Result<()> {
-    while let Some(MovementPacket {
-        movements,
-        duration,
-        stagger,
-    }) = rx.recv().await
-    {
-        for movement in movements.iter() {
-            gamepad.press(*movement)?;
+    let MovementPacket { movements, duration, stagger, .. } = packet;
 
-            if stagger != 0 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(stagger)).await;
-            }
+    for movement in movements.iter() {
+        gamepad.lock().await.press(*movement)?;
+
+        if stagger != 0 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(stagger)).await;
         }
+    }
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(duration)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(duration)).await;
 
-        for movement in movements.iter() {
-            gamepad.release(*movement)?;
+    for movement in movements.iter() {
+        gamepad.lock().await.release(*movement)?;
 
-            if stagger != 0 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(stagger)).await;
-            }
+        if stagger != 0 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(stagger)).await;
         }
     }
 
     Ok(())
+}
+
+pub async fn gamepad_runner<'a, G: Gamepad + Send + Sync + 'a>(
+    gamepad: &'a mut G,
+    mut rx: Receiver<MovementPacket>,
+) -> anyhow::Result<()> {
+    let gamepad = Arc::new(tokio::sync::Mutex::new(gamepad));
+    let mut current_packet: Option<MovementPacket> = None;
+    let mut current_executor: std::pin::Pin<Box<dyn Future<Output=anyhow::Result<()>> + Send + Sync>> = Box::pin(std::future::pending());
+
+    loop {
+        select! {
+            result = &mut current_executor => {
+                result?;
+                current_packet = None;
+                current_executor = Box::pin(std::future::pending());
+            },
+            packet = rx.recv() => {
+                match packet {
+                    Some(packet) => {
+                        if packet.interruptible {
+                            if let Some(interrupted) = current_packet {
+                                std::mem::drop(current_executor);
+                                for movement in interrupted.movements.iter() {
+                                    gamepad.lock().await.release(*movement)?;
+                                }
+                            }
+
+                            current_packet = Some(packet.clone());
+                            current_executor = Box::pin(gamepad_movement(gamepad.clone(), packet));
+                        } else {
+                            // Finish any interruptible movement first
+                            if current_packet.is_some() {
+                                current_executor.await?;
+                                current_executor = Box::pin(std::future::pending());
+                                current_packet = None;
+                            }
+
+                            gamepad_movement(gamepad.clone(), packet).await?;
+                        }
+                    },
+                    None => {
+                        if current_packet.is_some() {
+                            current_executor.await?;
+                        }
+
+                        break Ok(());
+                    }
+                }
+            },
+        }
+    }
 }
 
 pub fn run_gamepad<G: Gamepad + Send + Sync + 'static>(
