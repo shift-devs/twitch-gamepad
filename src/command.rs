@@ -439,8 +439,7 @@ pub async fn run_commands(
                             "Blocked {} {}",
                             user,
                             if let Some(duration) = duration {
-                                // FIXME: Eastern
-                                format!("until {}", duration)
+                                format!("until {}", duration.with_timezone(&chrono::offset::Local))
                             } else {
                                 "forever".to_owned()
                             }
