@@ -172,8 +172,8 @@ async fn can_send_multiple_movements() {
     test.gamepad.expect_sequence(&[
         (Movement::A, ActionType::Press),
         (Movement::B, ActionType::Press),
-        (Movement::A, ActionType::Release),
         (Movement::B, ActionType::Release),
+        (Movement::A, ActionType::Release),
     ]);
 }
 
@@ -1118,8 +1118,8 @@ async fn operator_can_save_state() {
     test.gamepad.expect_sequence(&[
         (Movement::Mode, ActionType::Press),
         (Movement::A, ActionType::Press),
-        (Movement::Mode, ActionType::Release),
         (Movement::A, ActionType::Release),
+        (Movement::Mode, ActionType::Release),
     ]);
 }
 
@@ -1150,8 +1150,8 @@ async fn operator_can_load_state() {
     test.gamepad.expect_sequence(&[
         (Movement::Mode, ActionType::Press),
         (Movement::B, ActionType::Press),
-        (Movement::Mode, ActionType::Release),
         (Movement::B, ActionType::Release),
+        (Movement::Mode, ActionType::Release),
     ]);
 }
 
@@ -1234,8 +1234,8 @@ async fn operator_can_reset_game() {
     test.gamepad.expect_sequence(&[
         (Movement::Mode, ActionType::Press),
         (Movement::X, ActionType::Press),
-        (Movement::Mode, ActionType::Release),
         (Movement::X, ActionType::Release),
+        (Movement::Mode, ActionType::Release),
     ]);
 }
 
@@ -1589,8 +1589,8 @@ async fn restricted_inputs_are_not_blocked_in_restricted_mode() {
     test.gamepad.expect_sequence(&[
         (Movement::Start, ActionType::Press),
         (Movement::B, ActionType::Press),
-        (Movement::Start, ActionType::Release),
         (Movement::B, ActionType::Release),
+        (Movement::Start, ActionType::Release),
     ]);
 }
 
@@ -1716,8 +1716,8 @@ async fn can_interrupt_movements() {
     test.gamepad.expect_sequence(&[
         (Movement::A, ActionType::Press),
         (Movement::B, ActionType::Press),
-        (Movement::A, ActionType::Release),
         (Movement::B, ActionType::Release),
+        (Movement::A, ActionType::Release),
         (Movement::Start, ActionType::Press),
         (Movement::Start, ActionType::Release),
     ]);
@@ -1746,6 +1746,7 @@ async fn saving_cannot_be_interrupted() {
             },
         )
         .await;
+
         send_message(
             &mut tx,
             Message {
@@ -1782,8 +1783,8 @@ async fn saving_cannot_be_interrupted() {
         (Movement::Select, ActionType::Release),
         (Movement::Mode, ActionType::Press),
         (Movement::A, ActionType::Press),
-        (Movement::Mode, ActionType::Release),
         (Movement::A, ActionType::Release),
+        (Movement::Mode, ActionType::Release),
         (Movement::Start, ActionType::Press),
         (Movement::Start, ActionType::Release),
     ]);

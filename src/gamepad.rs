@@ -95,7 +95,7 @@ async fn gamepad_movement<G: Gamepad>(
 
     tokio::time::sleep(tokio::time::Duration::from_millis(duration)).await;
 
-    for movement in movements.iter() {
+    for movement in movements.iter().rev() {
         gamepad.lock().await.release(*movement)?;
 
         if stagger != 0 {
@@ -127,7 +127,7 @@ pub async fn gamepad_runner<'a, G: Gamepad + Send + Sync + 'a>(
                         if packet.interruptible {
                             if let Some(interrupted) = current_packet {
                                 std::mem::drop(current_executor);
-                                for movement in interrupted.movements.iter() {
+                                for movement in interrupted.movements.iter().rev() {
                                     gamepad.lock().await.release(*movement)?;
                                 }
                             }
