@@ -1856,3 +1856,75 @@ async fn saving_cannot_be_interrupted() {
         (Movement::Start, ActionType::Release),
     ]);
 }
+
+#[tokio::test]
+async fn same_button_presses_are_sequenced() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_name = "user_name".to_owned();
+    let user_id = "user_id".to_owned();
+
+    let join_handle = tokio::task::spawn(async move {
+        let movements = vec![Movement::A];
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(MovementPacket {
+                    movements: movements.clone(),
+                    duration: 100,
+                    stagger: 0,
+                    blocking: false,
+                }),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Broadcaster,
+            },
+        )
+        .await;
+
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(MovementPacket {
+                    movements: movements.clone(),
+                    duration: 100,
+                    stagger: 0,
+                    blocking: false,
+                }),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Broadcaster,
+            },
+        )
+        .await;
+
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(MovementPacket {
+                    movements,
+                    duration: 50,
+                    stagger: 0,
+                    blocking: false,
+                }),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Broadcaster,
+            },
+        )
+        .await;
+    });
+
+    let timeout = tokio::time::timeout(tokio::time::Duration::from_secs(2), test.run());
+    timeout.await.unwrap().unwrap();
+
+    join_handle.await.unwrap();
+
+    test.gamepad.expect_sequence(&[
+        (Movement::A, ActionType::Press),
+        (Movement::A, ActionType::Release),
+        (Movement::A, ActionType::Press),
+        (Movement::A, ActionType::Release),
+        (Movement::A, ActionType::Press),
+        (Movement::A, ActionType::Release),
+    ]);
+}

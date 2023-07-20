@@ -122,6 +122,7 @@ struct RunnerState<'a, G: Gamepad> {
     update_interval_ms: u64,
     gamepad: &'a mut G,
     movement_time_remaining: Box<[u64]>,
+    apply_next_tick: Option<MovementPacket>,
     packet_queue: VecDeque<MovementPacket>,
     interval: tokio::time::Interval,
     draining: bool,
@@ -134,21 +135,24 @@ impl<'a, G: Gamepad> RunnerState<'a, G> {
             .all(|remaining| *remaining == 0)
     }
 
-    fn cancel_if_active(&mut self, movement: Movement) -> anyhow::Result<()> {
+    fn cancel_if_active(&mut self, movement: Movement) -> anyhow::Result<bool> {
         if self.movement_time_remaining[movement as usize] > 0 {
             self.movement_time_remaining[movement as usize] = 0;
             self.gamepad.release(movement)?;
+
+            return Ok(true);
         }
 
-        Ok(())
+        Ok(false)
     }
 
-    fn cancel_directional(&mut self) -> anyhow::Result<()> {
-        self.cancel_if_active(Movement::Up)?;
-        self.cancel_if_active(Movement::Down)?;
-        self.cancel_if_active(Movement::Left)?;
-        self.cancel_if_active(Movement::Right)?;
-        Ok(())
+    fn cancel_directional(&mut self) -> anyhow::Result<bool> {
+        let mut cancelled = false;
+        cancelled |= self.cancel_if_active(Movement::Up)?;
+        cancelled |= self.cancel_if_active(Movement::Down)?;
+        cancelled |= self.cancel_if_active(Movement::Left)?;
+        cancelled |= self.cancel_if_active(Movement::Right)?;
+        Ok(cancelled)
     }
 
     fn packet_can_run(&self, packet: &MovementPacket) -> bool {
@@ -179,21 +183,22 @@ impl<'a, G: Gamepad> RunnerState<'a, G> {
         }
 
         // If a packet contains a direction, give it priority
-        if packet.contains_direction() {
+        let contains_direction = packet.contains_direction();
+        if contains_direction {
             info!("Interrupting directions for: {:?}", packet);
-            self.cancel_directional()?;
+            let mut cancelled = self.cancel_directional()?;
 
             for movement in packet.movements.iter() {
-                self.cancel_if_active(*movement)?;
-                // FIXME: need to wait after release?
-                self.gamepad.press(*movement)?;
-                self.movement_time_remaining[*movement as usize] = packet.duration;
+                cancelled |= self.cancel_if_active(*movement)?;
             }
 
-            return Ok(true);
+            if cancelled {
+                self.apply_next_tick = Some(packet.clone());
+                return Ok(true);
+            }
         }
 
-        if self.packet_can_run(packet) {
+        if contains_direction || self.packet_can_run(packet) {
             info!("Executing immediately: {:?}", packet);
             for movement in packet.movements.iter() {
                 self.gamepad.press(*movement)?;
@@ -240,6 +245,13 @@ impl<'a, G: Gamepad> RunnerState<'a, G> {
             }
         }
 
+        if let Some(packet) = self.apply_next_tick.take() {
+            for movement in packet.movements {
+                self.gamepad.press(movement)?;
+                self.movement_time_remaining[movement as usize] = packet.duration;
+            }
+        }
+
         if all_zero {
             while let Some(packet) = self.packet_queue.pop_front() {
                 if !self.process_packet(&packet, true).await? {
@@ -268,6 +280,7 @@ pub async fn gamepad_runner<G: Gamepad>(
         update_interval_ms,
         gamepad,
         movement_time_remaining: vec![0; Movement::iter().count()].into_boxed_slice(),
+        apply_next_tick: None,
         packet_queue: VecDeque::new(),
         interval: tokio::time::interval(tokio::time::Duration::from_millis(update_interval_ms)),
         draining: false,
