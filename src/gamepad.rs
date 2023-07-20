@@ -6,6 +6,7 @@ use tokio::{
     select,
     sync::mpsc::{Receiver, Sender},
 };
+use tracing::info;
 use uinput::event::{absolute, controller};
 
 pub trait Gamepad {
@@ -86,6 +87,7 @@ async fn blocking_movement<G: Gamepad>(
     gamepad: &mut G,
     packet: &MovementPacket,
 ) -> anyhow::Result<()> {
+    info!("Executing blocking movement: {:?}", packet);
     let MovementPacket {
         movements,
         duration,
@@ -161,6 +163,8 @@ impl<'a, G: Gamepad> RunnerState<'a, G> {
         packet: &MovementPacket,
         ticking: bool,
     ) -> anyhow::Result<bool> {
+        info!("Processing packet: {:?} ticking: {:?}", packet, ticking);
+
         if packet.blocking {
             if self.time_remaining_empty() {
                 blocking_movement(self.gamepad, packet).await?;
@@ -176,12 +180,12 @@ impl<'a, G: Gamepad> RunnerState<'a, G> {
 
         // If a packet contains a direction, give it priority
         if packet.contains_direction() {
-            println!("contained direction");
+            info!("Interrupting directions for: {:?}", packet);
             self.cancel_directional()?;
 
             for movement in packet.movements.iter() {
                 self.cancel_if_active(*movement)?;
-                // FIXME: need to wait after release
+                // FIXME: need to wait after release?
                 self.gamepad.press(*movement)?;
                 self.movement_time_remaining[*movement as usize] = packet.duration;
             }
@@ -190,6 +194,7 @@ impl<'a, G: Gamepad> RunnerState<'a, G> {
         }
 
         if self.packet_can_run(packet) {
+            info!("Executing immediately: {:?}", packet);
             for movement in packet.movements.iter() {
                 self.gamepad.press(*movement)?;
                 self.movement_time_remaining[*movement as usize] = packet.duration;
@@ -210,10 +215,9 @@ impl<'a, G: Gamepad> RunnerState<'a, G> {
             }
         };
 
-        println!("received packet {:?}", packet);
         let processed = self.process_packet(&packet, false).await?;
         if !processed {
-            println!("pushing packet {:?}", packet);
+            info!("Queueing packet: {:?}", packet);
             self.packet_queue.push_back(packet);
         }
 
@@ -222,7 +226,6 @@ impl<'a, G: Gamepad> RunnerState<'a, G> {
 
     async fn process_tick(&mut self) -> anyhow::Result<bool> {
         let mut all_zero = true;
-        println!("before tick: {:?}", self.movement_time_remaining);
         for movement in Movement::iter() {
             let time_remaining = &mut self.movement_time_remaining[movement as usize];
             if *time_remaining == 0 {
@@ -237,13 +240,10 @@ impl<'a, G: Gamepad> RunnerState<'a, G> {
             }
         }
 
-        println!("after tick: {:?}", self.movement_time_remaining);
-
         if all_zero {
             while let Some(packet) = self.packet_queue.pop_front() {
-                println!("popped {:?}", packet);
                 if !self.process_packet(&packet, true).await? {
-                    println!("didnt process it, pushing {:?}", packet);
+                    info!("Unable to process {:?}, returning to queue", packet);
                     self.packet_queue.push_front(packet);
                     break;
                 }
@@ -252,7 +252,6 @@ impl<'a, G: Gamepad> RunnerState<'a, G> {
 
         // all_zero is no longer valid here, we may have mutated the remaining time
         if self.draining && self.time_remaining_empty() && self.packet_queue.is_empty() {
-            println!("drained");
             return Ok(true);
         }
 
