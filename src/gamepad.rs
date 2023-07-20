@@ -111,6 +111,8 @@ async fn gamepad_movement<G: Gamepad>(
         }
     }
 
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
     Ok(())
 }
 
@@ -141,6 +143,8 @@ pub async fn gamepad_runner<'a, G: Gamepad + Send + Sync + 'a>(
                                     gamepad.lock().await.release(*movement)?;
                                 }
                             }
+
+                            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
                             current_packet = Some(packet.clone());
                             current_executor = Box::pin(gamepad_movement(gamepad.clone(), packet));
