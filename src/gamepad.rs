@@ -2,7 +2,10 @@ use std::future::Future;
 use std::sync::Arc;
 
 use crate::command::{Movement, MovementPacket};
-use tokio::{sync::mpsc::{Receiver, Sender}, select};
+use tokio::{
+    select,
+    sync::mpsc::{Receiver, Sender},
+};
 use uinput::event::{absolute, controller};
 
 pub trait Gamepad {
@@ -83,7 +86,12 @@ async fn gamepad_movement<G: Gamepad>(
     gamepad: Arc<tokio::sync::Mutex<&mut G>>,
     packet: MovementPacket,
 ) -> anyhow::Result<()> {
-    let MovementPacket { movements, duration, stagger, .. } = packet;
+    let MovementPacket {
+        movements,
+        duration,
+        stagger,
+        ..
+    } = packet;
 
     for movement in movements.iter() {
         gamepad.lock().await.press(*movement)?;
@@ -112,7 +120,9 @@ pub async fn gamepad_runner<'a, G: Gamepad + Send + Sync + 'a>(
 ) -> anyhow::Result<()> {
     let gamepad = Arc::new(tokio::sync::Mutex::new(gamepad));
     let mut current_packet: Option<MovementPacket> = None;
-    let mut current_executor: std::pin::Pin<Box<dyn Future<Output=anyhow::Result<()>> + Send + Sync>> = Box::pin(std::future::pending());
+    let mut current_executor: std::pin::Pin<
+        Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync>,
+    > = Box::pin(std::future::pending());
 
     loop {
         select! {
