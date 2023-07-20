@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use tokio::{join, sync::mpsc::Sender};
+use tokio::sync::mpsc::Sender;
 
 use crate::{
     command::{self, AnarchyType, Command, Message, Movement, MovementPacket, Privilege},
@@ -103,19 +103,21 @@ impl TestSetup {
             runner_cmds
         });
 
-        let (gamepad_tx, gamepad_rx) = tokio::sync::mpsc::channel(50);
-        let gamepad_runner = crate::gamepad::gamepad_runner(&mut self.gamepad, gamepad_rx);
+        let gamepad = DummyGamepad::default();
+        let (gamepad_jh, gamepad_tx) = crate::gamepad::run_gamepad(gamepad);
 
-        let command_runner = command::run_commands(
+        command::run_commands(
             &mut self.msg_rx,
             &config,
             gamepad_tx,
             &mut self.db_conn,
             &mut tx,
-        );
-        let (gamepad_runner, command_runner) = join!(gamepad_runner, command_runner);
-        gamepad_runner.unwrap();
-        command_runner.unwrap();
+        )
+        .await
+        .unwrap();
+
+        let gamepad = gamepad_jh.await.unwrap();
+        self.gamepad = gamepad.unwrap();
         std::mem::drop(tx);
 
         let mut runner_cmds = jh.await.unwrap();
@@ -137,11 +139,11 @@ fn single_movement(movement: Movement) -> Command {
     let movements = vec![movement];
     Command::Movement(MovementPacket {
         movements,
-        duration: 0,
+        duration: 50,
         stagger: 0,
 
         // Don't allow interruption so tests are deterministic
-        interruptible: false,
+        blocking: true,
     })
 }
 
@@ -158,9 +160,9 @@ async fn can_send_multiple_movements() {
             Message {
                 command: Command::Movement(MovementPacket {
                     movements,
-                    duration: 0,
+                    duration: 50,
                     stagger: 0,
-                    interruptible: false,
+                    blocking: true,
                 }),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
@@ -1493,9 +1495,9 @@ async fn restricted_inputs_are_blocked_in_normal_modes() {
             Message {
                 command: Command::Movement(MovementPacket {
                     movements,
-                    duration: 0,
+                    duration: 50,
                     stagger: 0,
-                    interruptible: false,
+                    blocking: true,
                 }),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
@@ -1569,9 +1571,9 @@ async fn restricted_inputs_are_not_blocked_in_restricted_mode() {
             Message {
                 command: Command::Movement(MovementPacket {
                     movements,
-                    duration: 0,
+                    duration: 50,
                     stagger: 0,
-                    interruptible: false,
+                    blocking: true,
                 }),
                 sender_id: op_id.clone(),
                 sender_name: op_name.clone(),
@@ -1665,13 +1667,13 @@ async fn users_cannot_send_input_in_restricted_mode() {
 }
 
 #[tokio::test]
-async fn can_interrupt_movements() {
+async fn can_interrupt_movements_with_direction() {
     let (mut test, mut tx) = TestSetup::new();
     let user_name = "user_name".to_owned();
     let user_id = "user_id".to_owned();
 
     let join_handle = tokio::task::spawn(async move {
-        let movements = vec![Movement::A, Movement::B];
+        let movements = vec![Movement::Left];
         send_message(
             &mut tx,
             Message {
@@ -1682,7 +1684,7 @@ async fn can_interrupt_movements() {
                     // We shouldn't execute the whole thing
                     duration: 1000 * 60 * 2,
                     stagger: 0,
-                    interruptible: true,
+                    blocking: false,
                 }),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
@@ -1700,9 +1702,9 @@ async fn can_interrupt_movements() {
             Message {
                 command: Command::Movement(MovementPacket {
                     movements,
-                    duration: 0,
+                    duration: 50,
                     stagger: 0,
-                    interruptible: true,
+                    blocking: false,
                 }),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
@@ -1712,20 +1714,79 @@ async fn can_interrupt_movements() {
         .await;
     });
 
-    let start_time = std::time::Instant::now();
-    test.run().await.unwrap();
+    let timeout = tokio::time::timeout(tokio::time::Duration::from_secs(2), test.run());
+    timeout.await.unwrap().unwrap();
+
     join_handle.await.unwrap();
-    let end_time = std::time::Instant::now();
-    let duration = chrono::Duration::from_std(start_time - end_time).unwrap();
-    assert!(duration.num_minutes() < 1);
 
     test.gamepad.expect_sequence(&[
-        (Movement::A, ActionType::Press),
-        (Movement::B, ActionType::Press),
-        (Movement::B, ActionType::Release),
-        (Movement::A, ActionType::Release),
+        (Movement::Left, ActionType::Press),
+        (Movement::Left, ActionType::Release),
         (Movement::Start, ActionType::Press),
         (Movement::Start, ActionType::Release),
+    ]);
+}
+
+#[tokio::test]
+async fn only_directional_movements_are_interrupted() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_name = "user_name".to_owned();
+    let user_id = "user_id".to_owned();
+
+    let join_handle = tokio::task::spawn(async move {
+        let movements = vec![Movement::Left, Movement::B];
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(MovementPacket {
+                    movements,
+
+                    // Set a duration >= 1 minute
+                    // We shouldn't execute the whole thing
+                    duration: 400,
+                    stagger: 0,
+                    blocking: false,
+                }),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Broadcaster,
+            },
+        )
+        .await;
+
+        // Make sure the above movement is able to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let movements = vec![Movement::Start];
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(MovementPacket {
+                    movements,
+                    duration: 50,
+                    stagger: 0,
+                    blocking: false,
+                }),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Broadcaster,
+            },
+        )
+        .await;
+    });
+
+    let timeout = tokio::time::timeout(tokio::time::Duration::from_secs(2), test.run());
+    timeout.await.unwrap().unwrap();
+
+    join_handle.await.unwrap();
+
+    test.gamepad.expect_sequence(&[
+        (Movement::Left, ActionType::Press),
+        (Movement::B, ActionType::Press),
+        (Movement::Left, ActionType::Release),
+        (Movement::Start, ActionType::Press),
+        (Movement::Start, ActionType::Release),
+        (Movement::B, ActionType::Release),
     ]);
 }
 
@@ -1744,7 +1805,7 @@ async fn saving_cannot_be_interrupted() {
                     movements,
                     duration: 250,
                     stagger: 0,
-                    interruptible: true,
+                    blocking: false,
                 }),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),
@@ -1770,9 +1831,9 @@ async fn saving_cannot_be_interrupted() {
             Message {
                 command: Command::Movement(MovementPacket {
                     movements,
-                    duration: 0,
+                    duration: 50,
                     stagger: 0,
-                    interruptible: true,
+                    blocking: false,
                 }),
                 sender_id: user_id.clone(),
                 sender_name: user_name.clone(),

@@ -98,7 +98,23 @@ pub struct MovementPacket {
     pub movements: Vec<Movement>,
     pub duration: u64,
     pub stagger: u64,
-    pub interruptible: bool,
+    pub blocking: bool,
+}
+
+impl MovementPacket {
+    pub fn contains_direction(&self) -> bool {
+        self.movements.iter().any(|movement| {
+            matches!(
+                movement,
+                Movement::Up
+                    | Movement::Down
+                    | Movement::Left
+                    | Movement::Right
+                    | Movement::Start
+                    | Movement::Select
+            )
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -189,7 +205,7 @@ fn parse_movement(tokens: &Vec<&str>) -> Option<Command> {
             movements,
             duration,
             stagger: 0,
-            interruptible: true,
+            blocking: false,
         })
     })
 }
@@ -596,7 +612,7 @@ pub async fn run_commands(
                             movements,
                             duration: 100,
                             stagger: 100,
-                            interruptible: false,
+                            blocking: true,
                         })
                         .await?;
 
@@ -626,7 +642,7 @@ pub async fn run_commands(
                             movements,
                             duration: 100,
                             stagger: 100,
-                            interruptible: false,
+                            blocking: true,
                         })
                         .await?;
 
@@ -656,7 +672,7 @@ pub async fn run_commands(
                             movements,
                             duration: 100,
                             stagger: 100,
-                            interruptible: false,
+                            blocking: true,
                         })
                         .await?;
 
@@ -699,7 +715,7 @@ mod parsing_test {
             movements,
             duration,
             stagger: 0,
-            interruptible: true,
+            blocking: false,
         }))
     }
 
