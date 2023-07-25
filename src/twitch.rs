@@ -10,12 +10,16 @@ use twitch_irc::{
         LoginCredentials, RefreshingLoginCredentials, StaticLoginCredentials, TokenStorage,
         UserAccessToken,
     },
-    message::{PrivmsgMessage, ServerMessage},
+    message::{PrivmsgMessage, ServerMessage, UserNoticeEvent},
     transport::Transport,
     ClientConfig, SecureTCPTransport, TwitchIRCClient,
 };
 
-use crate::command::{self, Message, Privilege};
+use crate::{
+    command::{self, Message, Privilege},
+    config::SoundEffect,
+    game_runner::SfxRequest,
+};
 
 #[derive(Debug)]
 pub struct CredStore {
@@ -141,22 +145,62 @@ pub async fn run_twitch_irc<T: Transport, L: LoginCredentials>(
     mut stream: UnboundedReceiver<ServerMessage>,
     channel: String,
     mut tx: Sender<command::WithReply<Message, Option<String>>>,
+    mut sfx_runner: Option<Sender<SfxRequest>>,
 ) {
     while let Some(msg) = stream.recv().await {
-        if let ServerMessage::Privmsg(msg) = msg {
-            let reply_rx = process_message(&mut tx, &channel, &msg).await;
-            let reply_rx = if let Some(reply_rx) = reply_rx {
-                reply_rx
-            } else {
-                continue;
-            };
+        match msg {
+            ServerMessage::Privmsg(msg) => {
+                let reply_rx = process_message(&mut tx, &channel, &msg).await;
+                let reply_rx = if let Some(reply_rx) = reply_rx {
+                    reply_rx
+                } else {
+                    continue;
+                };
 
-            if let Ok(Some(response)) = reply_rx.await {
-                info!("Response: {}", response);
-                if let Err(err) = client.say_in_reply_to(&msg, response).await {
-                    error!("Error replying to twitch message: {:?}", err);
+                if let Ok(Some(response)) = reply_rx.await {
+                    info!("Response: {}", response);
+                    if let Err(err) = client.say_in_reply_to(&msg, response).await {
+                        error!("Error replying to twitch message: {:?}", err);
+                    }
                 }
             }
+            ServerMessage::UserNotice(notice) => {
+                info!("Received rich event {:?}", notice);
+                let sfx_runner: &mut Sender<SfxRequest> = match sfx_runner {
+                    Some(ref mut x) => x,
+                    None => continue,
+                };
+
+                let event = match notice.event {
+                    UserNoticeEvent::SubMysteryGift {
+                        mass_gift_count, ..
+                    } => {
+                        if mass_gift_count >= 10 {
+                            Some(SfxRequest::Event(SoundEffect::GiftedSubs10))
+                        } else {
+                            None
+                        }
+                    }
+                    UserNoticeEvent::AnonSubMysteryGift {
+                        mass_gift_count, ..
+                    } => {
+                        if mass_gift_count >= 10 {
+                            Some(SfxRequest::Event(SoundEffect::GiftedSubs10))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+
+                if let Some(effect) = event {
+                    info!("Sending effect {:?}", effect);
+                    if let Err(e) = sfx_runner.send(effect).await {
+                        error!("Unable to send sfx event: {:?}", e);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -167,6 +211,7 @@ pub fn run_twitch_irc_login(
     token_path: &Path,
     channel: String,
     tx: Sender<command::WithReply<Message, Option<String>>>,
+    sfx_runner: Option<Sender<SfxRequest>>,
 ) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
     let store = CredStore {
         path: token_path.to_owned(),
@@ -182,7 +227,7 @@ pub fn run_twitch_irc_login(
         let channel = channel.clone();
         tokio::spawn(async move {
             info!("Starting twitch IRC on channel {}", channel);
-            run_twitch_irc(client, message_stream, channel, tx).await;
+            run_twitch_irc(client, message_stream, channel, tx, sfx_runner).await;
         })
     };
 
@@ -193,6 +238,7 @@ pub fn run_twitch_irc_login(
 pub fn run_twitch_irc_anonymous(
     channel: String,
     tx: Sender<command::WithReply<Message, Option<String>>>,
+    sfx_runner: Option<Sender<SfxRequest>>,
 ) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
     let config = ClientConfig::default();
     let (message_stream, client) =
@@ -203,7 +249,7 @@ pub fn run_twitch_irc_anonymous(
         let channel = channel.clone();
         tokio::spawn(async move {
             info!("Starting twitch IRC on channel {}", channel);
-            run_twitch_irc(client, message_stream, channel, tx).await;
+            run_twitch_irc(client, message_stream, channel, tx, sfx_runner).await;
         })
     };
 

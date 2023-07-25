@@ -47,9 +47,23 @@ pub struct GameInfo {
     pub restricted_inputs: Option<Vec<String>>,
 }
 
+#[derive(Copy, Clone, Debug, Deserialize, Ord, PartialOrd, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SoundEffect {
+    GiftedSubs10,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct SoundEffectConfig {
+    pub command: String,
+    pub sounds: BTreeMap<String, String>,
+    pub event_map: BTreeMap<SoundEffect, String>,
+}
+
 #[derive(Clone, Deserialize)]
 pub struct Config {
     pub twitch: TwitchConfig,
+    pub sound_effects: Option<SoundEffectConfig>,
     pub games: Option<BTreeMap<GameName, GameInfo>>,
 }
 

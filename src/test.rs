@@ -90,6 +90,7 @@ impl TestSetup {
                 channel_name: String::new(),
                 auth: crate::config::TwitchAuth::Anonymous,
             },
+            sound_effects: None,
             games,
         };
 
@@ -112,6 +113,7 @@ impl TestSetup {
             gamepad_tx,
             &mut self.db_conn,
             &mut tx,
+            None,
         )
         .await
         .unwrap();

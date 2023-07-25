@@ -57,10 +57,19 @@ async fn main() {
     let db_path = cfg_dir.join("twitch_gamepad.db");
     let db_conn = database::connect(&db_path).unwrap();
 
+    let (_, mut sfx_tx) = match config
+        .sound_effects
+        .clone()
+        .map(game_runner::run_sfx_runner)
+    {
+        Some((x, y)) => (Some(x), Some(y)),
+        None => (None, None),
+    };
+
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_, client_handle) = match &config.twitch.auth {
         config::TwitchAuth::Anonymous => {
-            twitch::run_twitch_irc_anonymous(channel.clone(), tx.clone())
+            twitch::run_twitch_irc_anonymous(channel.clone(), tx.clone(), sfx_tx.clone())
         }
         config::TwitchAuth::Login {
             client,
@@ -94,6 +103,7 @@ async fn main() {
                 &token_path,
                 channel.clone(),
                 tx.clone(),
+                sfx_tx.clone(),
             )
         }
     };
@@ -119,6 +129,7 @@ async fn main() {
                 gamepad_tx,
                 &mut db_conn,
                 &mut game_runner_tx,
+                sfx_tx.as_mut(),
             )
             .await?;
 

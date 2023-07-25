@@ -1,7 +1,7 @@
-use crate::config::GameCommand;
+use crate::config::{GameCommand, SoundEffect, SoundEffectConfig};
 use nix::sys::signal::{kill, Signal};
-use tokio::process::Child;
-use tracing::info;
+use tokio::process::{Child, Command};
+use tracing::{info, warn};
 
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
@@ -112,6 +112,56 @@ pub fn run_game_runner() -> (
         game_runner_loop(rx, child_pid_atomic).await?;
         Ok(())
     });
+
+    (handle, tx)
+}
+
+#[derive(Clone, Debug)]
+pub enum SfxRequest {
+    Event(SoundEffect),
+    Named(String),
+}
+
+impl SfxRequest {
+    fn to_file<'a>(&self, cfg: &'a SoundEffectConfig) -> Option<&'a String> {
+        match self {
+            Self::Event(effect) => cfg
+                .event_map
+                .get(effect)
+                .and_then(|sfx_name| cfg.sounds.get(sfx_name)),
+            Self::Named(sfx) => cfg.sounds.get(sfx),
+        }
+    }
+}
+
+async fn sound_effect_runner(
+    mut rx: tokio::sync::mpsc::Receiver<SfxRequest>,
+    cfg: &SoundEffectConfig,
+) -> anyhow::Result<()> {
+    while let Some(effect) = rx.recv().await {
+        if let Some(sfx_file) = effect.to_file(cfg) {
+            info!("Playing sound effect for {:?}", effect);
+            Command::new(cfg.command.clone())
+                .args(vec![sfx_file])
+                .spawn()?
+                .wait()
+                .await?;
+        } else {
+            warn!("No sound effect file supplied for effect {:?}", effect);
+        }
+    }
+
+    Ok(())
+}
+
+pub fn run_sfx_runner(
+    cfg: SoundEffectConfig,
+) -> (
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+    tokio::sync::mpsc::Sender<SfxRequest>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::channel(50);
+    let handle = tokio::task::spawn(async move { sound_effect_runner(rx, &cfg).await });
 
     (handle, tx)
 }

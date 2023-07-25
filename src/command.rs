@@ -1,7 +1,7 @@
 use crate::{
     config::{Config, ConstructedGameInfo, GameName},
     database,
-    game_runner::{self, GameRunner},
+    game_runner::{self, GameRunner, SfxRequest},
 };
 use anyhow::{anyhow, Context};
 
@@ -128,6 +128,7 @@ pub enum PartialCommand {
     List,
     SetCooldown,
     SetAnarchyMode,
+    PlaySfx,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,6 +152,7 @@ pub enum Command {
     SetCooldown(chrono::Duration),
     SetAnarchyMode(AnarchyType),
     PrintAnarchyMode,
+    PlaySfx(String),
 }
 
 pub fn parse_movement_token(token: &str) -> Option<Movement> {
@@ -260,6 +262,8 @@ pub fn parse_command(input: &str) -> Option<Command> {
             .and_then(|d| chrono::Duration::from_std(d).ok())
             .map(Command::SetCooldown)
             .or(Some(Command::Partial(PartialCommand::SetCooldown))),
+        ["tp", "sfx"] => Some(Command::Partial(PartialCommand::PlaySfx)),
+        ["tp", "sfx", sfx] => Some(Command::PlaySfx(sfx.to_string())),
         _ => None,
     }
 }
@@ -270,6 +274,7 @@ pub async fn run_commands(
     gamepad_tx: Sender<MovementPacket>,
     db_conn: &mut Connection,
     game_runner_tx: &mut Sender<game_runner::GameRunner>,
+    mut sfx_player_tx: Option<&mut Sender<SfxRequest>>,
 ) -> anyhow::Result<()> {
     let game_commands = config.game_command_list();
     let mut current_game: Option<&ConstructedGameInfo> = None;
@@ -556,6 +561,7 @@ pub async fn run_commands(
                     List => "Usage: tp list games | blocked | ops",
                     SetCooldown => "Usage: tp cooldown <duration>",
                     SetAnarchyMode => "Usage: tp mode <anarchy | democracy>",
+                    PlaySfx => "Usage: tp sfx <sound effect>",
                 };
 
                 reply_tx
@@ -595,6 +601,9 @@ pub async fn run_commands(
                     available_commands.push("tp game - switch game");
                     available_commands.push("tp mode - set anarchy mode");
                     available_commands.push("tp cooldown - set command cooldown");
+                }
+                if msg.privilege >= Privilege::Broadcaster {
+                    available_commands.push("tp sfx - play sound effects");
                 }
                 reply_tx
                     .send(Some(available_commands.join(", ")))
@@ -685,6 +694,23 @@ pub async fn run_commands(
                         "{} attempted to save state with insufficient privilege {:?}",
                         msg.sender_name, msg.privilege
                     );
+                    reply_tx
+                        .send(Some("You don't have permission to do that".to_string()))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
+                }
+            }
+            PlaySfx(sfx) => {
+                if msg.privilege >= Privilege::Broadcaster {
+                    reply_tx
+                        .send(None)
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
+                    if let Some(ref mut player) = sfx_player_tx {
+                        player
+                            .send(SfxRequest::Named(sfx))
+                            .await
+                            .map_err(|_| anyhow!("Failed to send sfx request"))?;
+                    }
+                } else {
                     reply_tx
                         .send(Some("You don't have permission to do that".to_string()))
                         .map_err(|_| anyhow!("Failed to reply to command"))?;
