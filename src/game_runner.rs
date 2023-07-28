@@ -158,7 +158,7 @@ async fn sound_effect_runner(
 
             info!("Playing sound effect for {:?}", effect);
             Command::new(cfg.command.clone())
-                .args(vec![sfx_file])
+                .args(vec![sfx_file, "--fullscreen"])
                 .spawn()?
                 .wait()
                 .await?;

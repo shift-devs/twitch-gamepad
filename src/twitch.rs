@@ -171,34 +171,25 @@ pub async fn run_twitch_irc<T: Transport, L: LoginCredentials>(
                     None => continue,
                 };
 
+                fn gift_sub_sfx(mass_gift_count: u64) -> Option<SfxRequest> {
+                    if mass_gift_count >= 60 {
+                        Some(SfxRequest::Event(SoundEffect::GiftedSubs60))
+                    } else if mass_gift_count >= 20 {
+                        Some(SfxRequest::Event(SoundEffect::GiftedSubs20))
+                    } else if mass_gift_count >= 2 {
+                        Some(SfxRequest::Event(SoundEffect::GiftedSubs2))
+                    } else {
+                        None
+                    }
+                }
+
                 let event = match notice.event {
                     UserNoticeEvent::SubMysteryGift {
                         mass_gift_count, ..
-                    } => {
-                        if mass_gift_count >= 50 {
-                            Some(SfxRequest::Event(SoundEffect::GiftedSubs50))
-                        } else if mass_gift_count >= 20 {
-                            Some(SfxRequest::Event(SoundEffect::GiftedSubs20))
-                        } else if mass_gift_count >= 10 {
-                            Some(SfxRequest::Event(SoundEffect::GiftedSubs10))
-                        } else {
-                            None
-                        }
-                    }
+                    } => gift_sub_sfx(mass_gift_count),
                     UserNoticeEvent::AnonSubMysteryGift {
                         mass_gift_count, ..
-                    } => {
-                        if mass_gift_count >= 50 {
-                            Some(SfxRequest::Event(SoundEffect::GiftedSubs50))
-                        } else if mass_gift_count >= 20 {
-                            Some(SfxRequest::Event(SoundEffect::GiftedSubs20))
-                        } else if mass_gift_count >= 10 {
-                            Some(SfxRequest::Event(SoundEffect::GiftedSubs10))
-                        } else {
-                            None
-                        }
- 
-                    }
+                    } => gift_sub_sfx(mass_gift_count),
                     _ => None,
                 };
 
