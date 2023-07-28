@@ -8,7 +8,7 @@ use anyhow::{anyhow, Context};
 use rusqlite::Connection;
 use strum_macros::EnumIter;
 use tokio::sync::{
-    mpsc::{Receiver, Sender},
+    mpsc::{Receiver, Sender, UnboundedSender},
     oneshot,
 };
 use tracing::info;
@@ -278,7 +278,7 @@ pub async fn run_commands(
     gamepad_tx: Sender<MovementPacket>,
     db_conn: &mut Connection,
     game_runner_tx: &mut Sender<game_runner::GameRunner>,
-    mut sfx_player_tx: Option<&mut Sender<SfxRequest>>,
+    mut sfx_player_tx: Option<&mut UnboundedSender<SfxRequest>>,
 ) -> anyhow::Result<()> {
     let game_commands = config.game_command_list();
     let mut current_game: Option<&ConstructedGameInfo> = None;
@@ -308,7 +308,7 @@ pub async fn run_commands(
     // Disable SFX if it should be disabled
     if !matches!(anarchy_mode, AnarchyType::Streaming) {
         if let Some(ref mut sfx_player) = sfx_player_tx {
-            sfx_player.send(SfxRequest::Enable(false)).await
+            sfx_player.send(SfxRequest::Enable(false))
                 .expect("Failed to reinit SFX");
         }
     }
@@ -374,7 +374,7 @@ pub async fn run_commands(
                     if matches!(anarchy_mode, AnarchyType::Streaming) &&
                         !matches!(am, AnarchyType::Streaming) {
                         if let Some(ref mut sfx_player) = sfx_player_tx {
-                            sfx_player.send(SfxRequest::Enable(false)).await
+                            sfx_player.send(SfxRequest::Enable(false))
                                 .map_err(|_| anyhow!("Failed to reply to command"))?;
                         }
                     }
@@ -386,7 +386,7 @@ pub async fn run_commands(
                         current_game = None;
                         game_runner_tx.send(GameRunner::Stop).await?;
                         if let Some(ref mut sfx_player) = sfx_player_tx {
-                            sfx_player.send(SfxRequest::Enable(true)).await
+                            sfx_player.send(SfxRequest::Enable(true))
                                 .map_err(|_| anyhow!("Failed to reply to command"))?;
                         }
                     }
@@ -750,7 +750,6 @@ pub async fn run_commands(
                     if let Some(ref mut player) = sfx_player_tx {
                         player
                             .send(SfxRequest::Named(sfx))
-                            .await
                             .map_err(|_| anyhow!("Failed to send sfx request"))?;
                     }
                 } else {

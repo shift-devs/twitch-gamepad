@@ -137,7 +137,7 @@ impl SfxRequest {
 }
 
 async fn sound_effect_runner(
-    mut rx: tokio::sync::mpsc::Receiver<SfxRequest>,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<SfxRequest>,
     cfg: &SoundEffectConfig,
 ) -> anyhow::Result<()> {
     let mut is_enabled = true;
@@ -174,9 +174,9 @@ pub fn run_sfx_runner(
     cfg: SoundEffectConfig,
 ) -> (
     tokio::task::JoinHandle<anyhow::Result<()>>,
-    tokio::sync::mpsc::Sender<SfxRequest>,
+    tokio::sync::mpsc::UnboundedSender<SfxRequest>,
 ) {
-    let (tx, rx) = tokio::sync::mpsc::channel(50);
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let handle = tokio::task::spawn(async move { sound_effect_runner(rx, &cfg).await });
 
     (handle, tx)

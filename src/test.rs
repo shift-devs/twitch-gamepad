@@ -107,7 +107,7 @@ impl TestSetup {
             runner_cmds
         });
 
-        let (mut sfx_tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let (mut sfx_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let sfx_runner_jh = tokio::task::spawn(async move {
             let mut sfx_cmds = Vec::new();
             while let Some(cmd) = rx.recv().await {

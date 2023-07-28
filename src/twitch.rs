@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use tokio::sync::{
-    mpsc::{Sender, UnboundedReceiver},
+    mpsc::{Sender, UnboundedReceiver, UnboundedSender},
     oneshot,
 };
 use tracing::{error, info};
@@ -145,7 +145,7 @@ pub async fn run_twitch_irc<T: Transport, L: LoginCredentials>(
     mut stream: UnboundedReceiver<ServerMessage>,
     channel: String,
     mut tx: Sender<command::WithReply<Message, Option<String>>>,
-    mut sfx_runner: Option<Sender<SfxRequest>>,
+    mut sfx_runner: Option<UnboundedSender<SfxRequest>>,
 ) {
     while let Some(msg) = stream.recv().await {
         match msg {
@@ -166,7 +166,7 @@ pub async fn run_twitch_irc<T: Transport, L: LoginCredentials>(
             }
             ServerMessage::UserNotice(notice) => {
                 info!("Received rich event {:?}", notice);
-                let sfx_runner: &mut Sender<SfxRequest> = match sfx_runner {
+                let sfx_runner: &mut UnboundedSender<SfxRequest> = match sfx_runner {
                     Some(ref mut x) => x,
                     None => continue,
                 };
@@ -195,7 +195,7 @@ pub async fn run_twitch_irc<T: Transport, L: LoginCredentials>(
 
                 if let Some(effect) = event {
                     info!("Sending effect {:?}", effect);
-                    if let Err(e) = sfx_runner.send(effect).await {
+                    if let Err(e) = sfx_runner.send(effect) {
                         error!("Unable to send sfx event: {:?}", e);
                     }
                 }
@@ -211,7 +211,7 @@ pub fn run_twitch_irc_login(
     token_path: &Path,
     channel: String,
     tx: Sender<command::WithReply<Message, Option<String>>>,
-    sfx_runner: Option<Sender<SfxRequest>>,
+    sfx_runner: Option<UnboundedSender<SfxRequest>>,
 ) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
     let store = CredStore {
         path: token_path.to_owned(),
@@ -238,7 +238,7 @@ pub fn run_twitch_irc_login(
 pub fn run_twitch_irc_anonymous(
     channel: String,
     tx: Sender<command::WithReply<Message, Option<String>>>,
-    sfx_runner: Option<Sender<SfxRequest>>,
+    sfx_runner: Option<UnboundedSender<SfxRequest>>,
 ) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
     let config = ClientConfig::default();
     let (message_stream, client) =
