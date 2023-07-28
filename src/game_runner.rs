@@ -116,10 +116,11 @@ pub fn run_game_runner() -> (
     (handle, tx)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SfxRequest {
     Event(SoundEffect),
     Named(String),
+    Enable(bool),
 }
 
 impl SfxRequest {
@@ -130,6 +131,7 @@ impl SfxRequest {
                 .get(effect)
                 .and_then(|sfx_name| cfg.sounds.get(sfx_name)),
             Self::Named(sfx) => cfg.sounds.get(sfx),
+            _ => None,
         }
     }
 }
@@ -138,8 +140,22 @@ async fn sound_effect_runner(
     mut rx: tokio::sync::mpsc::Receiver<SfxRequest>,
     cfg: &SoundEffectConfig,
 ) -> anyhow::Result<()> {
+    let mut is_enabled = true;
+    info!("Started SFX runner");
+
     while let Some(effect) = rx.recv().await {
+        if let SfxRequest::Enable(en) = effect {
+            info!("Setting SFX to {:?}", effect);
+            is_enabled = en;
+            continue;
+        }
+
         if let Some(sfx_file) = effect.to_file(cfg) {
+            if !is_enabled {
+                info!("SFX disabled, skipping");
+                continue;
+            }
+
             info!("Playing sound effect for {:?}", effect);
             Command::new(cfg.command.clone())
                 .args(vec![sfx_file])

@@ -16,34 +16,34 @@ fn stdin_input(
     tx: tokio::sync::mpsc::Sender<command::WithReply<Message, Option<String>>>,
 ) -> tokio::task::JoinHandle<anyhow::Result<()>> {
     tokio::task::spawn(async move {
-        let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
-        let mut line = String::new();
+        loop {
+            let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
+            let mut line = String::new();
 
-        while let Ok(sz) = reader.read_line(&mut line).await {
-            if sz == 0 {
-                break;
-            }
-
-            if let Some(cmd) = command::parse_command(&line) {
-                let msg = command::Message {
-                    command: cmd,
-                    sender_name: "stdin".to_owned(),
-                    sender_id: "stdin".to_owned(),
-                    privilege: command::Privilege::Broadcaster,
-                };
-
-                tracing::info!("Message: {:?}", msg);
-                let (msg, reply_rx) = command::WithReply::new(msg);
-                tx.send(msg).await?;
-                if let Ok(Some(reply)) = reply_rx.await {
-                    tracing::info!("Reply: {:?}", reply);
+            while let Ok(sz) = reader.read_line(&mut line).await {
+                if sz == 0 {
+                    break;
                 }
+
+                if let Some(cmd) = command::parse_command(&line) {
+                    let msg = command::Message {
+                        command: cmd,
+                        sender_name: "stdin".to_owned(),
+                        sender_id: "stdin".to_owned(),
+                        privilege: command::Privilege::Broadcaster,
+                    };
+
+                    tracing::info!("Message: {:?}", msg);
+                    let (msg, reply_rx) = command::WithReply::new(msg);
+                    tx.send(msg).await?;
+                    if let Ok(Some(reply)) = reply_rx.await {
+                        tracing::info!("Reply: {:?}", reply);
+                    }
+                }
+
+                line.clear();
             }
-
-            line.clear();
         }
-
-        Ok(())
     })
 }
 

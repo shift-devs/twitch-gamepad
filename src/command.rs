@@ -21,6 +21,7 @@ pub enum AnarchyType {
     Anarchy,
     Democracy,
     Restricted,
+    Streaming,
 }
 
 impl AnarchyType {
@@ -29,6 +30,7 @@ impl AnarchyType {
             Self::Anarchy => "anarchy",
             Self::Democracy => "democracy",
             Self::Restricted => "restricted",
+            Self::Streaming => "streaming",
         }
     }
 
@@ -37,6 +39,7 @@ impl AnarchyType {
             "anarchy" => Some(Self::Anarchy),
             "democracy" => Some(Self::Democracy),
             "restricted" => Some(Self::Restricted),
+            "streaming" => Some(Self::Streaming),
             _ => None,
         }
     }
@@ -255,6 +258,7 @@ pub fn parse_command(input: &str) -> Option<Command> {
         ["tp", "mode", "anarchy"] => Some(Command::SetAnarchyMode(AnarchyType::Anarchy)),
         ["tp", "mode", "democracy"] => Some(Command::SetAnarchyMode(AnarchyType::Democracy)),
         ["tp", "mode", "restricted"] => Some(Command::SetAnarchyMode(AnarchyType::Restricted)),
+        ["tp", "mode", "stream" | "streaming"] => Some(Command::SetAnarchyMode(AnarchyType::Streaming)),
         ["tp", "mode", _] => Some(Command::Partial(PartialCommand::SetAnarchyMode)),
         ["tp", "cooldown"] => Some(Command::Partial(PartialCommand::SetCooldown)),
         ["tp", "cooldown", cd] => duration_str::parse(cd)
@@ -284,6 +288,7 @@ pub async fn run_commands(
         CONFIG_KV_ANARCHY_MODE,
         AnarchyType::Democracy.to_str().to_owned(),
     )?;
+
     let mut anarchy_mode = match AnarchyType::from_str(&anarchy_mode) {
         Some(am) => am,
         None => {
@@ -299,6 +304,14 @@ pub async fn run_commands(
             AnarchyType::Democracy
         }
     };
+
+    // Disable SFX if it should be disabled
+    if !matches!(anarchy_mode, AnarchyType::Streaming) {
+        if let Some(ref mut sfx_player) = sfx_player_tx {
+            sfx_player.send(SfxRequest::Enable(false)).await
+                .expect("Failed to reinit SFX");
+        }
+    }
 
     let cooldown: String =
         database::get_or_set_kv(db_conn, CONFIG_KV_COOLDOWN_DURATION, "0".to_owned())?;
@@ -357,8 +370,27 @@ pub async fn run_commands(
         match msg.command {
             SetAnarchyMode(am) => {
                 if msg.privilege >= Privilege::Moderator {
+                    // If we are in streaming mode already, disable sfx
+                    if matches!(anarchy_mode, AnarchyType::Streaming) &&
+                        !matches!(am, AnarchyType::Streaming) {
+                        if let Some(ref mut sfx_player) = sfx_player_tx {
+                            sfx_player.send(SfxRequest::Enable(false)).await
+                                .map_err(|_| anyhow!("Failed to reply to command"))?;
+                        }
+                    }
+
                     anarchy_mode = am;
                     database::set_kv(db_conn, CONFIG_KV_ANARCHY_MODE, anarchy_mode.to_str())?;
+
+                    if let AnarchyType::Streaming = am {
+                        current_game = None;
+                        game_runner_tx.send(GameRunner::Stop).await?;
+                        if let Some(ref mut sfx_player) = sfx_player_tx {
+                            sfx_player.send(SfxRequest::Enable(true)).await
+                                .map_err(|_| anyhow!("Failed to reply to command"))?;
+                        }
+                    }
+
                     reply_tx
                         .send(Some(format!("Set mode to {}", anarchy_mode.to_str())))
                         .map_err(|_| anyhow!("Failed to reply to command"))?;
@@ -398,6 +430,11 @@ pub async fn run_commands(
                     && current_game.is_some_and(|game| game.is_movement_restricted(&packet))
                 {
                     info!("Packet contains restricted movement {:?}", packet);
+                    continue;
+                }
+
+                if matches!(anarchy_mode, AnarchyType::Streaming) {
+                    info!("Mode is streaming, skipping movement");
                     continue;
                 }
 
@@ -504,6 +541,12 @@ pub async fn run_commands(
                 }
             }
             Game(game) => {
+                if let AnarchyType::Streaming = anarchy_mode {
+                    reply_tx.send(Some("Cannot start game in streaming mode, change mode first".to_owned()))
+                        .map_err(|_| anyhow!("Failed to reply to command"))?;
+                    continue;
+                }
+
                 if msg.privilege >= Privilege::Moderator {
                     if let Some(game_info) = game_commands.get(&game) {
                         current_game = Some(game_info);
@@ -560,7 +603,7 @@ pub async fn run_commands(
                     Game => "Usage: tp game <game-name>",
                     List => "Usage: tp list games | blocked | ops",
                     SetCooldown => "Usage: tp cooldown <duration>",
-                    SetAnarchyMode => "Usage: tp mode <anarchy | democracy>",
+                    SetAnarchyMode => "Usage: tp mode <anarchy | democracy | restricted | streaming>",
                     PlaySfx => "Usage: tp sfx <sound effect>",
                 };
 
@@ -989,6 +1032,31 @@ mod parsing_test {
         Some(Command::SetAnarchyMode(
             crate::command::AnarchyType::Restricted
         ))
+    );
+    test_command!(
+        parse_streaming,
+        "tp mode streaming",
+        Some(Command::SetAnarchyMode(
+            crate::command::AnarchyType::Streaming
+        ))
+    );
+    test_command!(
+        parse_stream,
+        "tp mode stream",
+        Some(Command::SetAnarchyMode(
+            crate::command::AnarchyType::Streaming
+        ))
+    );
+
+    test_command!(
+        parse_sfx,
+        "tp sfx sfx_name",
+        Some(Command::PlaySfx("sfx_name".to_owned()))
+    );
+    test_command!(
+        parse_partial_sfx,
+        "tp sfx",
+        Some(Command::Partial(PartialCommand::PlaySfx))
     );
 
     test_command!(

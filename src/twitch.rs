@@ -175,7 +175,11 @@ pub async fn run_twitch_irc<T: Transport, L: LoginCredentials>(
                     UserNoticeEvent::SubMysteryGift {
                         mass_gift_count, ..
                     } => {
-                        if mass_gift_count >= 10 {
+                        if mass_gift_count >= 50 {
+                            Some(SfxRequest::Event(SoundEffect::GiftedSubs50))
+                        } else if mass_gift_count >= 20 {
+                            Some(SfxRequest::Event(SoundEffect::GiftedSubs20))
+                        } else if mass_gift_count >= 10 {
                             Some(SfxRequest::Event(SoundEffect::GiftedSubs10))
                         } else {
                             None
@@ -184,11 +188,16 @@ pub async fn run_twitch_irc<T: Transport, L: LoginCredentials>(
                     UserNoticeEvent::AnonSubMysteryGift {
                         mass_gift_count, ..
                     } => {
-                        if mass_gift_count >= 10 {
+                        if mass_gift_count >= 50 {
+                            Some(SfxRequest::Event(SoundEffect::GiftedSubs50))
+                        } else if mass_gift_count >= 20 {
+                            Some(SfxRequest::Event(SoundEffect::GiftedSubs20))
+                        } else if mass_gift_count >= 10 {
                             Some(SfxRequest::Event(SoundEffect::GiftedSubs10))
                         } else {
                             None
                         }
+ 
                     }
                     _ => None,
                 };

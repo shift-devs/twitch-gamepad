@@ -6,7 +6,7 @@ use crate::{
     command::{self, AnarchyType, Command, Message, Movement, MovementPacket, Privilege},
     config::{Config, GameCommandString, GameInfo, GameName},
     database,
-    game_runner::GameRunner,
+    game_runner::{GameRunner, SfxRequest},
     gamepad::Gamepad,
 };
 
@@ -16,7 +16,7 @@ enum ActionType {
     Release,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct DummyGamepad {
     actions: std::collections::LinkedList<(crate::command::Movement, ActionType)>,
 }
@@ -48,11 +48,13 @@ impl DummyGamepad {
     }
 }
 
+#[derive(Debug)]
 struct TestSetup {
     msg_rx: tokio::sync::mpsc::Receiver<command::WithReply<Message, Option<String>>>,
     db_conn: rusqlite::Connection,
     gamepad: DummyGamepad,
     game_runner_cmds: Vec<GameRunner>,
+    sfx_cmds: Vec<SfxRequest>,
 }
 
 impl TestSetup {
@@ -72,6 +74,7 @@ impl TestSetup {
                 db_conn,
                 gamepad,
                 game_runner_cmds: vec![],
+                sfx_cmds: vec![],
             },
             tx,
         )
@@ -94,14 +97,24 @@ impl TestSetup {
             games,
         };
 
-        let (mut tx, mut rx) = tokio::sync::mpsc::channel(10);
-        let jh = tokio::task::spawn(async move {
+        let (mut game_runner_tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let game_runner_jh = tokio::task::spawn(async move {
             let mut runner_cmds = Vec::new();
             while let Some(cmd) = rx.recv().await {
                 runner_cmds.push(cmd);
             }
 
             runner_cmds
+        });
+
+        let (mut sfx_tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let sfx_runner_jh = tokio::task::spawn(async move {
+            let mut sfx_cmds = Vec::new();
+            while let Some(cmd) = rx.recv().await {
+                sfx_cmds.push(cmd);
+            }
+
+            sfx_cmds
         });
 
         let gamepad = DummyGamepad::default();
@@ -112,18 +125,22 @@ impl TestSetup {
             &config,
             gamepad_tx,
             &mut self.db_conn,
-            &mut tx,
-            None,
+            &mut game_runner_tx,
+            Some(&mut sfx_tx),
         )
         .await
         .unwrap();
 
         let gamepad = gamepad_jh.await.unwrap();
         self.gamepad = gamepad.unwrap();
-        std::mem::drop(tx);
+        std::mem::drop(game_runner_tx);
+        std::mem::drop(sfx_tx);
 
-        let mut runner_cmds = jh.await.unwrap();
+        let mut runner_cmds = game_runner_jh.await.unwrap();
         self.game_runner_cmds.append(&mut runner_cmds);
+
+        let mut sfx_cmds = sfx_runner_jh.await.unwrap();
+        self.sfx_cmds.append(&mut sfx_cmds);
         Ok(())
     }
 }
@@ -1926,6 +1943,149 @@ async fn same_button_presses_are_sequenced() {
         (Movement::A, ActionType::Release),
         (Movement::A, ActionType::Press),
         (Movement::A, ActionType::Release),
+        (Movement::A, ActionType::Press),
+        (Movement::A, ActionType::Release),
+    ]);
+}
+
+#[tokio::test]
+async fn sfx_are_enabled_in_stream_mode_and_games_cannot_be_started() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_id = "user_id".to_owned();
+    let user_name = "user_name".to_owned();
+
+    let mut games: BTreeMap<GameName, GameInfo> = BTreeMap::new();
+
+    let name: GameName = "Game 2".to_owned();
+    let game2_cmd = GameCommandString("cmdforgame2 --command".to_owned());
+    games.insert(
+        name,
+        GameInfo {
+            command: game2_cmd.clone(),
+            restricted_inputs: Some(vec!["start".to_owned()]),
+        },
+    );
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::SetAnarchyMode(AnarchyType::Streaming),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Moderator,
+            },
+        )
+        .await;
+
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Game("Game 2".to_owned()),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Moderator,
+            },
+        )
+        .await;
+
+        let movements = vec![Movement::Start, Movement::B];
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Movement(MovementPacket {
+                    movements,
+                    duration: 50,
+                    stagger: 0,
+                    blocking: true,
+                }),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Moderator,
+            },
+        )
+        .await;
+    });
+
+    test.run_with_games(Some(games)).await.unwrap();
+    join_handle.await.unwrap();
+
+    dbg!(&test);
+
+    assert_eq!(test.game_runner_cmds.len(), 1);
+    assert_eq!(test.game_runner_cmds[0], GameRunner::Stop);
+    assert_eq!(test.sfx_cmds.len(), 2);
+    assert_eq!(test.sfx_cmds[0], SfxRequest::Enable(false));
+    assert_eq!(test.sfx_cmds[1], SfxRequest::Enable(true));
+    test.gamepad.expect_sequence(&[]);
+}
+
+#[tokio::test]
+async fn games_can_be_started_after_switching_from_stream_mode() {
+    let (mut test, mut tx) = TestSetup::new();
+    let user_id = "user_id".to_owned();
+    let user_name = "user_name".to_owned();
+
+    let mut games: BTreeMap<GameName, GameInfo> = BTreeMap::new();
+
+    let name: GameName = "Game 2".to_owned();
+    let game2_cmd = GameCommandString("cmdforgame2 --command".to_owned());
+    games.insert(
+        name,
+        GameInfo {
+            command: game2_cmd.clone(),
+            restricted_inputs: Some(vec!["start".to_owned()]),
+        },
+    );
+
+    // Initialize in streaming setting
+    database::set_kv(&test.db_conn, "anarchy_mode", "streaming").unwrap();
+
+    let join_handle = tokio::task::spawn(async move {
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::SetAnarchyMode(AnarchyType::Democracy),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Moderator,
+            },
+        )
+        .await;
+
+        send_message(
+            &mut tx,
+            Message {
+                command: Command::Game("Game 2".to_owned()),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Moderator,
+            },
+        )
+        .await;
+
+        send_message(
+            &mut tx,
+            Message {
+                command: single_movement(Movement::A),
+                sender_id: user_id.clone(),
+                sender_name: user_name.clone(),
+                privilege: Privilege::Moderator,
+            },
+        )
+        .await;
+    });
+
+    test.run_with_games(Some(games)).await.unwrap();
+    join_handle.await.unwrap();
+
+    dbg!(&test);
+
+    assert_eq!(test.game_runner_cmds.len(), 1);
+    assert_eq!(test.game_runner_cmds[0], GameRunner::SwitchTo(game2_cmd.to_command()));
+    assert_eq!(test.sfx_cmds.len(), 1);
+    assert_eq!(test.sfx_cmds[0], SfxRequest::Enable(false));
+    test.gamepad.expect_sequence(&[
         (Movement::A, ActionType::Press),
         (Movement::A, ActionType::Release),
     ]);

@@ -51,6 +51,8 @@ pub struct GameInfo {
 #[serde(rename_all = "snake_case")]
 pub enum SoundEffect {
     GiftedSubs10,
+    GiftedSubs20,
+    GiftedSubs50,
 }
 
 #[derive(Clone, Deserialize)]
