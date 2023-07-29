@@ -192,10 +192,11 @@ fn parse_movement(tokens: &Vec<&str>) -> Option<Command> {
         if let Some(movement) = parse_movement_token(token) {
             movements.push(movement);
         } else if idx == tokens.len() - 1 {
-            duration = str::parse::<u64>(token)
+            duration = str::parse::<f64>(token)
                 .ok()
-                .filter(|sec| *sec <= 5)
-                .map(|sec| sec * 1000);
+                .filter(|sec| *sec <= 5f64)
+                .map(|sec| sec * 1000f64)
+                .map(|sec| sec as u64);
         } else {
             return None;
         }
@@ -862,6 +863,11 @@ mod parsing_test {
         parse_movement_duration,
         "a 2",
         movement_packet(&[Movement::A], 2000)
+    );
+    test_command!(
+        parse_movement_fractional_duration,
+        "a 0.6",
+        movement_packet(&[Movement::A], 600)
     );
     test_command!(
         parse_movement_multiple_with_time,
