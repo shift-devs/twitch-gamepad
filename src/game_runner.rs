@@ -143,6 +143,11 @@ async fn sound_effect_runner(
     let mut is_enabled = true;
     info!("Started SFX runner");
 
+    for (event, sfx) in cfg.event_map.iter() {
+        let sfx = cfg.sounds.get(sfx);
+        info!("Event: {:?} maps to {:?}", event, sfx);
+    }
+
     while let Some(effect) = rx.recv().await {
         if let SfxRequest::Enable(en) = effect {
             info!("Setting SFX to {:?}", effect);

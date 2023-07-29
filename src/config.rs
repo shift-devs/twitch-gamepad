@@ -53,6 +53,7 @@ pub enum SoundEffect {
     GiftedSubs2,
     GiftedSubs20,
     GiftedSubs60,
+    GiftedSubs100,
 }
 
 #[derive(Clone, Deserialize)]

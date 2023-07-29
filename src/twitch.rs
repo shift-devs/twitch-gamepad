@@ -172,7 +172,9 @@ pub async fn run_twitch_irc<T: Transport, L: LoginCredentials>(
                 };
 
                 fn gift_sub_sfx(mass_gift_count: u64) -> Option<SfxRequest> {
-                    if mass_gift_count >= 60 {
+                    if mass_gift_count >= 100 {
+                        Some(SfxRequest::Event(SoundEffect::GiftedSubs100))
+                    } else if mass_gift_count >= 60 {
                         Some(SfxRequest::Event(SoundEffect::GiftedSubs60))
                     } else if mass_gift_count >= 20 {
                         Some(SfxRequest::Event(SoundEffect::GiftedSubs20))
