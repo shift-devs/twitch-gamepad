@@ -1,4 +1,4 @@
-use crate::config::{GameCommand, SoundEffect, SoundEffectConfig};
+use crate::config::{GameCommand, SoundEffectConfig};
 use nix::sys::signal::{kill, Signal};
 use tokio::process::{Child, Command};
 use tracing::{info, warn};
@@ -118,7 +118,7 @@ pub fn run_game_runner() -> (
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SfxRequest {
-    Event(SoundEffect),
+    SubEvent(u64),
     Named(String),
     Enable(bool),
 }
@@ -126,10 +126,11 @@ pub enum SfxRequest {
 impl SfxRequest {
     fn to_file<'a>(&self, cfg: &'a SoundEffectConfig) -> Option<&'a String> {
         match self {
-            Self::Event(effect) => cfg
-                .event_map
-                .get(effect)
-                .and_then(|sfx_name| cfg.sounds.get(sfx_name)),
+            Self::SubEvent(count) => cfg
+                .sub_events
+                .range(..=count)
+                .next_back()
+                .and_then(|(_, sfx_name)| cfg.sounds.get(sfx_name)),
             Self::Named(sfx) => cfg.sounds.get(sfx),
             _ => None,
         }
@@ -143,9 +144,9 @@ async fn sound_effect_runner(
     let mut is_enabled = true;
     info!("Started SFX runner");
 
-    for (event, sfx) in cfg.event_map.iter() {
+    for (event, sfx) in cfg.sub_events.iter() {
         let sfx = cfg.sounds.get(sfx);
-        info!("Event: {:?} maps to {:?}", event, sfx);
+        info!("at least {} subs will play {:?}", event, sfx);
     }
 
     while let Some(effect) = rx.recv().await {
@@ -185,4 +186,43 @@ pub fn run_sfx_runner(
     let handle = tokio::task::spawn(async move { sound_effect_runner(rx, &cfg).await });
 
     (handle, tx)
+}
+
+#[cfg(test)]
+mod sfx_player {
+    use std::collections::BTreeMap;
+
+    use crate::config::SoundEffectConfig;
+
+    #[test]
+    fn test_sub_events() {
+        let mut sub_events = BTreeMap::new();
+        sub_events.insert(20, "20".to_owned());
+        sub_events.insert(60, "60".to_owned());
+        sub_events.insert(80, "80".to_owned());
+        sub_events.insert(100, "100".to_owned());
+
+        let mut sounds = BTreeMap::new();
+        sounds.insert("20".to_owned(), "20".to_owned());
+        sounds.insert("60".to_owned(), "60".to_owned());
+        sounds.insert("80".to_owned(), "80".to_owned());
+        sounds.insert("100".to_owned(), "100".to_owned());
+
+        let cfg = SoundEffectConfig {
+            command: "cmd".to_owned(),
+            sounds,
+            sub_events,
+        };
+
+        use super::SfxRequest::SubEvent;
+        assert_eq!(SubEvent(10).to_file(&cfg), None);
+        assert_eq!(SubEvent(20).to_file(&cfg), Some(&"20".to_owned()));
+        assert_eq!(SubEvent(30).to_file(&cfg), Some(&"20".to_owned()));
+        assert_eq!(SubEvent(60).to_file(&cfg), Some(&"60".to_owned()));
+        assert_eq!(SubEvent(70).to_file(&cfg), Some(&"60".to_owned()));
+        assert_eq!(SubEvent(80).to_file(&cfg), Some(&"80".to_owned()));
+        assert_eq!(SubEvent(99).to_file(&cfg), Some(&"80".to_owned()));
+        assert_eq!(SubEvent(100).to_file(&cfg), Some(&"100".to_owned()));
+        assert_eq!(SubEvent(2147483647).to_file(&cfg), Some(&"100".to_owned()));
+    }
 }

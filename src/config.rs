@@ -1,11 +1,26 @@
 use anyhow::anyhow;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de::Error};
 use std::{
     collections::{BTreeMap, HashSet},
     path::PathBuf,
 };
 
 use crate::command::{parse_movement_token, Movement, MovementPacket};
+
+fn deserialize_u64_map<'d, D, T>(deserializer: D) -> Result<BTreeMap<u64, T>, D::Error>
+where
+    D: Deserializer<'d>,
+    T: Deserialize<'d>
+{
+    let orig_map: BTreeMap<String, T> = BTreeMap::deserialize(deserializer)?;
+    let u64_key_map: Result<BTreeMap<u64, T>, D::Error> = orig_map.into_iter()
+        .map(|(k, v)|
+            k.parse::<u64>()
+            .map(|k| (k, v))
+            .map_err(|e| D::Error::custom(format!("Failed to parse u64 key: {:?}", e)))
+        ).collect();
+    u64_key_map
+}
 
 pub type GameName = String;
 
@@ -47,20 +62,13 @@ pub struct GameInfo {
     pub restricted_inputs: Option<Vec<String>>,
 }
 
-#[derive(Copy, Clone, Debug, Deserialize, Ord, PartialOrd, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum SoundEffect {
-    GiftedSubs2,
-    GiftedSubs20,
-    GiftedSubs60,
-    GiftedSubs100,
-}
-
 #[derive(Clone, Deserialize)]
 pub struct SoundEffectConfig {
     pub command: String,
     pub sounds: BTreeMap<String, String>,
-    pub event_map: BTreeMap<SoundEffect, String>,
+
+    #[serde(deserialize_with = "deserialize_u64_map")]
+    pub sub_events: BTreeMap<u64, String>,
 }
 
 #[derive(Clone, Deserialize)]
