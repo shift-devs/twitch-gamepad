@@ -147,6 +147,14 @@ async fn sound_effect_runner(
     for (event, sfx) in cfg.sub_events.iter() {
         let sfx = cfg.sounds.get(sfx);
         info!("at least {} subs will play {:?}", event, sfx);
+
+        if let Some(file) = sfx {
+            let exists = std::path::PathBuf::from(file).exists();
+            info!("File {} {}", file, match exists {
+                true => "exists",
+                false => "does not exist",
+            });
+        }
     }
 
     while let Some(effect) = rx.recv().await {
