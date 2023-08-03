@@ -195,6 +195,7 @@ fn parse_movement(tokens: &Vec<&str>) -> Option<Command> {
             duration = str::parse::<f64>(token)
                 .ok()
                 .filter(|sec| *sec <= 5f64)
+                .filter(|sec| *sec >= 0f64)
                 .map(|sec| sec * 1000f64)
                 .map(|sec| sec as u64);
         } else {
@@ -792,6 +793,16 @@ mod parsing_test {
         parse_movement_case_sensitivity,
         "A",
         movement_packet(&[Movement::A], 100)
+    );
+    test_command!(
+        parse_movement_negative_input,
+        "a -4",
+        None
+    );
+    test_command!(
+        parse_movement_zero_input,
+        "a 0",
+        movement_packet(&[Movement::A], 0)
     );
     test_command!(parse_movement_a, "a", movement_packet(&[Movement::A], 100));
     test_command!(parse_movement_b, "b", movement_packet(&[Movement::B], 100));
