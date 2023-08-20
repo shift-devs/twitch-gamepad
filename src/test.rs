@@ -1080,6 +1080,7 @@ async fn can_list_games() {
         GameInfo {
             command: GameCommandString("cmdforgame1 --command".to_owned()),
             restricted_inputs: None,
+            controls: None,
         },
     );
 
@@ -1089,6 +1090,7 @@ async fn can_list_games() {
         GameInfo {
             command: GameCommandString("cmdforgame2 --command".to_owned()),
             restricted_inputs: None,
+            controls: None,
         },
     );
 
@@ -1303,6 +1305,7 @@ async fn moderator_can_switch_games() {
         GameInfo {
             command: GameCommandString("cmdforgame1 --command".to_owned()),
             restricted_inputs: None,
+            controls: None,
         },
     );
 
@@ -1313,6 +1316,7 @@ async fn moderator_can_switch_games() {
         GameInfo {
             command: game2_cmd.clone(),
             restricted_inputs: None,
+            controls: None,
         },
     );
 
@@ -1353,6 +1357,7 @@ async fn moderator_can_stop_gameplay() {
         GameInfo {
             command: GameCommandString("cmdforgame1 --command".to_owned()),
             restricted_inputs: None,
+            controls: None,
         },
     );
 
@@ -1363,6 +1368,7 @@ async fn moderator_can_stop_gameplay() {
         GameInfo {
             command: game2_cmd,
             restricted_inputs: None,
+            controls: None,
         },
     );
 
@@ -1400,6 +1406,7 @@ async fn user_cannot_switch_games() {
         GameInfo {
             command: GameCommandString("cmdforgame1 --command".to_owned()),
             restricted_inputs: None,
+            controls: None,
         },
     );
 
@@ -1410,6 +1417,7 @@ async fn user_cannot_switch_games() {
         GameInfo {
             command: game2_cmd,
             restricted_inputs: None,
+            controls: None,
         },
     );
 
@@ -1446,6 +1454,7 @@ async fn user_cannot_stop_gameplay() {
         GameInfo {
             command: GameCommandString("cmdforgame1 --command".to_owned()),
             restricted_inputs: None,
+            controls: None,
         },
     );
 
@@ -1456,6 +1465,7 @@ async fn user_cannot_stop_gameplay() {
         GameInfo {
             command: game2_cmd,
             restricted_inputs: None,
+            controls: None,
         },
     );
 
@@ -1493,6 +1503,7 @@ async fn restricted_inputs_are_blocked_in_normal_modes() {
         GameInfo {
             command: game2_cmd.clone(),
             restricted_inputs: Some(vec!["start".to_owned()]),
+            controls: None,
         },
     );
 
@@ -1558,6 +1569,7 @@ async fn restricted_inputs_are_not_blocked_in_restricted_mode() {
         GameInfo {
             command: game2_cmd.clone(),
             restricted_inputs: Some(vec!["start".to_owned()]),
+            controls: None,
         },
     );
 
@@ -1636,6 +1648,7 @@ async fn users_cannot_send_input_in_restricted_mode() {
         GameInfo {
             command: game2_cmd.clone(),
             restricted_inputs: Some(vec!["start".to_owned()]),
+            controls: None,
         },
     );
 
@@ -1963,6 +1976,7 @@ async fn sfx_are_enabled_in_stream_mode_and_games_cannot_be_started() {
         GameInfo {
             command: game2_cmd.clone(),
             restricted_inputs: Some(vec!["start".to_owned()]),
+            controls: None,
         },
     );
 
@@ -2035,6 +2049,7 @@ async fn games_can_be_started_after_switching_from_stream_mode() {
         GameInfo {
             command: game2_cmd.clone(),
             restricted_inputs: Some(vec!["start".to_owned()]),
+            controls: None,
         },
     );
 
@@ -2082,7 +2097,10 @@ async fn games_can_be_started_after_switching_from_stream_mode() {
     dbg!(&test);
 
     assert_eq!(test.game_runner_cmds.len(), 1);
-    assert_eq!(test.game_runner_cmds[0], GameRunner::SwitchTo(game2_cmd.to_command()));
+    assert_eq!(
+        test.game_runner_cmds[0],
+        GameRunner::SwitchTo(game2_cmd.to_command())
+    );
     assert_eq!(test.sfx_cmds.len(), 1);
     assert_eq!(test.sfx_cmds[0], SfxRequest::Enable(false));
     test.gamepad.expect_sequence(&[

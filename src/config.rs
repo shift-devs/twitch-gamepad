@@ -1,5 +1,5 @@
 use anyhow::anyhow;
-use serde::{Deserialize, Deserializer, de::Error};
+use serde::{de::Error, Deserialize, Deserializer};
 use std::{
     collections::{BTreeMap, HashSet},
     path::PathBuf,
@@ -10,15 +10,17 @@ use crate::command::{parse_movement_token, Movement, MovementPacket};
 fn deserialize_u64_map<'d, D, T>(deserializer: D) -> Result<BTreeMap<u64, T>, D::Error>
 where
     D: Deserializer<'d>,
-    T: Deserialize<'d>
+    T: Deserialize<'d>,
 {
     let orig_map: BTreeMap<String, T> = BTreeMap::deserialize(deserializer)?;
-    let u64_key_map: Result<BTreeMap<u64, T>, D::Error> = orig_map.into_iter()
-        .map(|(k, v)|
+    let u64_key_map: Result<BTreeMap<u64, T>, D::Error> = orig_map
+        .into_iter()
+        .map(|(k, v)| {
             k.parse::<u64>()
-            .map(|k| (k, v))
-            .map_err(|e| D::Error::custom(format!("Failed to parse u64 key: {:?}", e)))
-        ).collect();
+                .map(|k| (k, v))
+                .map_err(|e| D::Error::custom(format!("Failed to parse u64 key: {:?}", e)))
+        })
+        .collect();
     u64_key_map
 }
 
@@ -35,8 +37,10 @@ pub struct GameCommand {
 
 #[derive(Clone)]
 pub struct ConstructedGameInfo {
+    pub name: String,
     pub command: GameCommand,
     pub restricted_inputs: HashSet<Movement>,
+    pub controls_msg: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -60,6 +64,7 @@ pub struct TwitchConfig {
 pub struct GameInfo {
     pub command: GameCommandString,
     pub restricted_inputs: Option<Vec<String>>,
+    pub controls: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -149,8 +154,10 @@ impl Config {
                         (
                             name.to_owned(),
                             ConstructedGameInfo {
+                                name: name.to_owned(),
                                 command: gi.command.to_command(),
                                 restricted_inputs: ri,
+                                controls_msg: gi.controls.clone(),
                             },
                         )
                     })

@@ -156,6 +156,7 @@ pub enum Command {
     SetAnarchyMode(AnarchyType),
     PrintAnarchyMode,
     PlaySfx(String),
+    Controls(Option<String>),
 }
 
 pub fn parse_movement_token(token: &str) -> Option<Movement> {
@@ -260,7 +261,9 @@ pub fn parse_command(input: &str) -> Option<Command> {
         ["tp", "mode", "anarchy"] => Some(Command::SetAnarchyMode(AnarchyType::Anarchy)),
         ["tp", "mode", "democracy"] => Some(Command::SetAnarchyMode(AnarchyType::Democracy)),
         ["tp", "mode", "restricted"] => Some(Command::SetAnarchyMode(AnarchyType::Restricted)),
-        ["tp", "mode", "stream" | "streaming"] => Some(Command::SetAnarchyMode(AnarchyType::Streaming)),
+        ["tp", "mode", "stream" | "streaming"] => {
+            Some(Command::SetAnarchyMode(AnarchyType::Streaming))
+        }
         ["tp", "mode", _] => Some(Command::Partial(PartialCommand::SetAnarchyMode)),
         ["tp", "cooldown"] => Some(Command::Partial(PartialCommand::SetCooldown)),
         ["tp", "cooldown", cd] => duration_str::parse(cd)
@@ -270,6 +273,8 @@ pub fn parse_command(input: &str) -> Option<Command> {
             .or(Some(Command::Partial(PartialCommand::SetCooldown))),
         ["tp", "sfx"] => Some(Command::Partial(PartialCommand::PlaySfx)),
         ["tp", "sfx", sfx] => Some(Command::PlaySfx(sfx.to_string())),
+        ["tp", "controls"] => Some(Command::Controls(None)),
+        ["tp", "controls", game @ ..] => Some(Command::Controls(Some(game.join(" ")))),
         _ => None,
     }
 }
@@ -310,7 +315,8 @@ pub async fn run_commands(
     // Disable SFX if it should be disabled
     if !matches!(anarchy_mode, AnarchyType::Streaming) {
         if let Some(ref mut sfx_player) = sfx_player_tx {
-            sfx_player.send(SfxRequest::Enable(false))
+            sfx_player
+                .send(SfxRequest::Enable(false))
                 .expect("Failed to reinit SFX");
         }
     }
@@ -373,10 +379,12 @@ pub async fn run_commands(
             SetAnarchyMode(am) => {
                 if msg.privilege >= Privilege::Moderator {
                     // If we are in streaming mode already, disable sfx
-                    if matches!(anarchy_mode, AnarchyType::Streaming) &&
-                        !matches!(am, AnarchyType::Streaming) {
+                    if matches!(anarchy_mode, AnarchyType::Streaming)
+                        && !matches!(am, AnarchyType::Streaming)
+                    {
                         if let Some(ref mut sfx_player) = sfx_player_tx {
-                            sfx_player.send(SfxRequest::Enable(false))
+                            sfx_player
+                                .send(SfxRequest::Enable(false))
                                 .map_err(|_| anyhow!("Failed to reply to command"))?;
                         }
                     }
@@ -388,7 +396,8 @@ pub async fn run_commands(
                         current_game = None;
                         game_runner_tx.send(GameRunner::Stop).await?;
                         if let Some(ref mut sfx_player) = sfx_player_tx {
-                            sfx_player.send(SfxRequest::Enable(true))
+                            sfx_player
+                                .send(SfxRequest::Enable(true))
                                 .map_err(|_| anyhow!("Failed to reply to command"))?;
                         }
                     }
@@ -544,7 +553,10 @@ pub async fn run_commands(
             }
             Game(game) => {
                 if let AnarchyType::Streaming = anarchy_mode {
-                    reply_tx.send(Some("Cannot start game in streaming mode, change mode first".to_owned()))
+                    reply_tx
+                        .send(Some(
+                            "Cannot start game in streaming mode, change mode first".to_owned(),
+                        ))
                         .map_err(|_| anyhow!("Failed to reply to command"))?;
                     continue;
                 }
@@ -605,7 +617,9 @@ pub async fn run_commands(
                     Game => "Usage: tp game <game-name>",
                     List => "Usage: tp list games | blocked | ops",
                     SetCooldown => "Usage: tp cooldown <duration>",
-                    SetAnarchyMode => "Usage: tp mode <anarchy | democracy | restricted | streaming>",
+                    SetAnarchyMode => {
+                        "Usage: tp mode <anarchy | democracy | restricted | streaming>"
+                    }
                     PlaySfx => "Usage: tp sfx <sound effect>",
                 };
 
@@ -760,6 +774,30 @@ pub async fn run_commands(
                         .map_err(|_| anyhow!("Failed to reply to command"))?;
                 }
             }
+            Controls(game_arg) => {
+                let game = match &game_arg {
+                    Some(x) => game_commands.get(x.as_str()),
+                    None => current_game,
+                };
+
+                let controls_text = match game {
+                    Some(game) => match &game.controls_msg {
+                        Some(msg) => format!("{} controls: {}", game.name, msg),
+                        None => format!("{} has no specific controls", game.name),
+                    },
+                    None => {
+                        if game_arg.is_none() {
+                            format!("No game is being played currently")
+                        } else {
+                            format!("No game of that name found")
+                        }
+                    }
+                };
+
+                reply_tx
+                    .send(Some(controls_text))
+                    .map_err(|_| anyhow!("Failed to reply to command"))?;
+            }
         }
     }
 
@@ -794,11 +832,7 @@ mod parsing_test {
         "A",
         movement_packet(&[Movement::A], 100)
     );
-    test_command!(
-        parse_movement_negative_input,
-        "a -4",
-        None
-    );
+    test_command!(parse_movement_negative_input, "a -4", None);
     test_command!(
         parse_movement_zero_input,
         "a 0",
@@ -1091,6 +1125,13 @@ mod parsing_test {
         Some(Command::Game("game with spaces".to_string()))
     );
     test_command!(parse_stop, "tp stop", Some(Command::Stop));
+
+    test_command!(parse_controls, "tp controls", Some(Command::Controls(None)));
+    test_command!(
+        parse_controls_game,
+        "tp controls some game",
+        Some(Command::Controls(Some("some game".to_string())))
+    );
 
     test_command!(
         parse_cooldown,

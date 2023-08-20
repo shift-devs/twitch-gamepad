@@ -150,10 +150,14 @@ async fn sound_effect_runner(
 
         if let Some(file) = sfx {
             let exists = std::path::PathBuf::from(file).exists();
-            info!("File {} {}", file, match exists {
-                true => "exists",
-                false => "does not exist",
-            });
+            info!(
+                "File {} {}",
+                file,
+                match exists {
+                    true => "exists",
+                    false => "does not exist",
+                }
+            );
         }
     }
 

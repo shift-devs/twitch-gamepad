@@ -4,7 +4,7 @@ use tokio::sync::{
     mpsc::{Sender, UnboundedReceiver, UnboundedSender},
     oneshot,
 };
-use tracing::{trace, error, info};
+use tracing::{error, info, trace};
 use twitch_irc::{
     login::{
         LoginCredentials, RefreshingLoginCredentials, StaticLoginCredentials, TokenStorage,
