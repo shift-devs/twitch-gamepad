@@ -50,6 +50,11 @@ fn stdin_input(
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     tracing_subscriber::fmt::init();
+    if let Err(std::env::VarError::NotPresent) = std::env::var("DISPLAY") {
+        tracing::error!("Cannot find graphical display env vars, bailing");
+        std::process::exit(1);
+    }
+
     let (config, cfg_path) = config::read_config().await.unwrap();
     let cfg_dir = cfg_path.parent().unwrap();
     let channel = &config.twitch.channel_name;
